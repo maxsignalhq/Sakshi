@@ -99,6 +99,16 @@ def run_installer(base: str, install_dir: Path) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, env=env, capture_output=True, text=True)
 
 
+def annotate(message: str, result: subprocess.CompletedProcess) -> None:
+    """Print a failure, also as a GitHub Actions annotation so it can be read
+    from the API without the full log."""
+    detail = f"{message}\nexit={result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    print("FAIL: " + detail)
+    if os.environ.get("GITHUB_ACTIONS"):
+        escaped = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=installer smoke test::{escaped}")
+
+
 def main() -> int:
     target = host_target()
     exe = "sakshi.exe" if "windows" in target else "sakshi"
@@ -111,12 +121,12 @@ def main() -> int:
             good = run_installer(base, tmp / "good")
             print(good.stdout, good.stderr, sep="")
             if good.returncode != 0 or not (tmp / "good" / exe).is_file():
-                print(f"FAIL: clean install of {target} did not produce {exe}")
+                annotate(f"clean install of {target} did not produce {exe}", good)
                 return 1
             if "windows" not in target:
                 out = subprocess.run([str(tmp / "good" / exe)], capture_output=True, text=True)
                 if "stand-in" not in out.stdout:
-                    print("FAIL: installed binary does not run")
+                    annotate("installed binary does not run", out)
                     return 1
 
             sums = archive.with_name(archive.name + ".sha256")
@@ -124,7 +134,7 @@ def main() -> int:
             bad = run_installer(base, tmp / "bad")
             print(bad.stdout, bad.stderr, sep="")
             if bad.returncode == 0 or (tmp / "bad" / exe).exists():
-                print("FAIL: a wrong checksum was accepted")
+                annotate("a wrong checksum was accepted", bad)
                 return 1
         finally:
             server.shutdown()

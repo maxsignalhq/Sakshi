@@ -17,9 +17,10 @@ $Repo = 'maxsignalhq/Sakshi'
 $Base = if ($env:SAKSHI_DOWNLOAD_BASE) { $env:SAKSHI_DOWNLOAD_BASE } else { "https://github.com/$Repo/releases" }
 $InstallDir = if ($env:SAKSHI_INSTALL_DIR) { $env:SAKSHI_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\sakshi' }
 
+# Throw rather than exit: under `irm | iex`, exit would close the user's
+# PowerShell window. Run as a file, an uncaught throw still exits with 1.
 function Fail($message) {
-    Write-Error "sakshi: $message"
-    exit 1
+    throw "sakshi: error: $message"
 }
 
 # Which build fits this machine. OSArchitecture is the real CPU, even when
@@ -53,7 +54,11 @@ try {
     Write-Host "sakshi: downloading $name"
     $zip = Join-Path $tmp "$name.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-    $expected = ((Invoke-WebRequest -Uri "$url.sha256" -UseBasicParsing).Content -split '\s+')[0].Trim().ToLower()
+    # Save the checksum to a file: servers (GitHub included) send .sha256 as
+    # application/octet-stream, which PowerShell 7 would hand back as bytes.
+    $sumFile = Join-Path $tmp "$name.zip.sha256"
+    Invoke-WebRequest -Uri "$url.sha256" -OutFile $sumFile -UseBasicParsing
+    $expected = ((Get-Content -Raw $sumFile).Trim() -split '\s+')[0].ToLower()
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if (-not $expected -or $expected -ne $actual) {
         Fail "checksum mismatch for $name.zip; not installing"
