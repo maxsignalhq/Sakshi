@@ -2,17 +2,42 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
+use sakshi_core::{format_age, Badge, ChangeKind, Severity};
+use time::OffsetDateTime;
 
 use crate::emulator::TerminalEmulator;
 use crate::layout;
+use crate::pane::{GitState, Pane};
 use crate::workspace::{Confirm, Focus, Workspace};
 
+/// Files listed in the panel's change summary before "and N more".
+const MAX_FILES_SHOWN: usize = 8;
+
+/// Activity lines shown in the panel.
+const MAX_ACTIVITY_SHOWN: usize = 12;
+
+fn badge_color(badge: Badge) -> Color {
+    match badge {
+        Badge::Green => Color::Green,
+        Badge::Yellow => Color::Yellow,
+        Badge::Red => Color::Red,
+    }
+}
+
+fn badge_label(badge: Badge) -> &'static str {
+    match badge {
+        Badge::Green => "GREEN",
+        Badge::Yellow => "YELLOW",
+        Badge::Red => "RED",
+    }
+}
+
 pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
-    let regions = layout::regions(frame.area());
+    let regions = layout::regions(frame.area(), ws.show_panel);
 
     let lines: Vec<Line> = ws
         .panes
@@ -20,7 +45,7 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
         .enumerate()
         .map(|(i, pane)| {
             let label = format!(
-                "{} {} {}",
+                "{} {} {} ",
                 i + 1,
                 pane.session.state.icon(),
                 pane.session.name
@@ -30,7 +55,11 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
                 (true, Focus::Terminal) => Style::default().add_modifier(Modifier::BOLD),
                 _ => Style::default(),
             };
-            Line::styled(label, style)
+            let badge = Style::default().fg(badge_color(pane.trust.badge));
+            Line::from(vec![
+                Span::styled(label, style),
+                Span::styled("●", style.patch(badge)),
+            ])
         })
         .collect();
     frame.render_widget(
@@ -65,10 +94,129 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
         }
     }
 
+    if let Some(panel) = regions.panel {
+        let lines = match ws.selected_pane() {
+            Some(pane) => panel_lines(pane, OffsetDateTime::now_utc()),
+            None => vec![Line::from("Nothing selected.")],
+        };
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::bordered().title(" Details ")),
+            panel,
+        );
+    }
+
     frame.render_widget(
         Paragraph::new(footer_text(ws)).style(Style::default().add_modifier(Modifier::DIM)),
         regions.footer,
     );
+}
+
+fn heading(text: &str) -> Line<'static> {
+    Line::styled(
+        text.to_string(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )
+}
+
+fn finding_marker(severity: Severity) -> (&'static str, Style) {
+    match severity {
+        Severity::Alert => ("✗", Style::default().fg(Color::Red)),
+        Severity::Warn => ("▲", Style::default().fg(Color::Yellow)),
+        Severity::Info => ("·", Style::default().add_modifier(Modifier::DIM)),
+    }
+}
+
+fn kind_letter(kind: ChangeKind) -> char {
+    match kind {
+        ChangeKind::Added => 'A',
+        ChangeKind::Modified => 'M',
+        ChangeKind::Deleted => 'D',
+        ChangeKind::Renamed => 'R',
+    }
+}
+
+/// The details panel for one session: verdict, findings, changes, activity.
+pub(crate) fn panel_lines(pane: &Pane, now: OffsetDateTime) -> Vec<Line<'static>> {
+    let badge = pane.trust.badge;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("Trust  "),
+            Span::styled(
+                badge_label(badge),
+                Style::default()
+                    .fg(badge_color(badge))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        heading("Findings"),
+    ];
+
+    if pane.trust.findings.is_empty() {
+        lines.push(Line::raw("  Nothing looks off."));
+    }
+    for finding in &pane.trust.findings {
+        let (marker, style) = finding_marker(finding.severity);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {marker} "), style),
+            Span::raw(finding.reason.clone()),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(heading("Changes"));
+    match (&pane.git, &pane.diff) {
+        (GitState::Pending, _) => lines.push(Line::raw("  Checking repository...")),
+        (GitState::NotARepo, _) => lines.push(Line::raw("  Not a git repository.")),
+        (GitState::Ready(_), None) => lines.push(Line::raw("  Not checked yet. Press r.")),
+        (GitState::Ready(_), Some(diff)) if diff.files.is_empty() => {
+            lines.push(Line::raw("  No changes."));
+        }
+        (GitState::Ready(_), Some(diff)) => {
+            lines.push(Line::raw(format!(
+                "  {} file(s), +{} -{}",
+                diff.files.len(),
+                diff.lines_added(),
+                diff.lines_removed()
+            )));
+            for file in diff.files.iter().take(MAX_FILES_SHOWN) {
+                lines.push(Line::raw(format!(
+                    "  {} {} +{} -{}",
+                    kind_letter(file.kind),
+                    file.path,
+                    file.added.len(),
+                    file.removed.len()
+                )));
+            }
+            if diff.files.len() > MAX_FILES_SHOWN {
+                lines.push(Line::raw(format!(
+                    "  ...and {} more",
+                    diff.files.len() - MAX_FILES_SHOWN
+                )));
+            }
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(heading("Recent activity"));
+    let recent: Vec<Line> = pane
+        .events
+        .iter()
+        .rev()
+        .filter_map(|event| {
+            let text = event.describe()?;
+            let age = format_age((now - event.ts).whole_seconds());
+            Some(Line::raw(format!("  {age:>4}  {text}")))
+        })
+        .take(MAX_ACTIVITY_SHOWN)
+        .collect();
+    if recent.is_empty() {
+        lines.push(Line::raw("  Nothing yet."));
+    }
+    lines.extend(recent);
+    lines
 }
 
 /// The key hints or message shown in the footer.
@@ -98,7 +246,7 @@ pub(crate) fn footer_text(ws: &Workspace) -> String {
             for agent in &ws.agents {
                 hints.push_str(&format!("  {} {}", agent.key, agent.name));
             }
-            hints.push_str("  x close  q quit");
+            hints.push_str("  t details  r refresh  x close  q quit");
             hints
         }
     }
@@ -126,19 +274,22 @@ pub(crate) fn render_terminal(buf: &mut Buffer, area: Rect, emulator: &dyn Termi
 mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::style::Color;
     use ratatui::Terminal;
-    use sakshi_core::{Event, EventKind, SessionId, SessionState};
+    use sakshi_core::{ChangeKind, Diff, Event, EventKind, FileChange, SessionId, SessionState};
     use sakshi_pty::TermSize;
 
     use super::*;
     use crate::emulator::Vt100Emulator;
     use crate::workspace::tests::workspace_with;
 
-    fn render(ws: &Workspace, width: u16, height: u16) -> String {
+    fn render_buffer(ws: &Workspace, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|f| draw(f, ws)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render(ws: &Workspace, width: u16, height: u16) -> String {
+        let buffer = render_buffer(ws, width, height);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -151,6 +302,23 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn text_of(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn command(id: u64, c: &str) -> Event {
+        Event::now(SessionId(id), EventKind::Command { command: c.into() })
     }
 
     #[test]
@@ -186,6 +354,23 @@ mod tests {
     }
 
     #[test]
+    fn each_session_shows_a_badge_in_its_trust_colour() {
+        let (mut ws, _, _) = workspace_with(&["clean", "risky"]);
+        ws.handle_event(&command(2, "git push --force"));
+        ws.tick();
+        let buffer = render_buffer(&ws, 100, 20);
+        // The badge is the last cell of each list row, inside the border.
+        let dot = |y: u16| {
+            (1..26u16)
+                .map(|x| &buffer[(x, y)])
+                .find(|c| c.symbol() == "●")
+                .map(|c| c.fg)
+        };
+        assert_eq!(dot(1), Some(Color::Green));
+        assert_eq!(dot(2), Some(Color::Red));
+    }
+
+    #[test]
     fn an_empty_workspace_explains_what_to_do() {
         let (ws, _, _) = workspace_with(&[]);
         let screen = render(&ws, 100, 20);
@@ -205,12 +390,95 @@ mod tests {
     }
 
     #[test]
+    fn the_details_panel_appears_when_toggled_and_there_is_room() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        assert!(!render(&ws, 160, 30).contains("Details"));
+        ws.handle_key(press(KeyCode::Char('t')));
+        let screen = render(&ws, 160, 30);
+        assert!(screen.contains("Details"), "{screen}");
+        assert!(screen.contains("Trust  GREEN"), "{screen}");
+        // Too narrow for the panel: it is quietly left out.
+        assert!(!render(&ws, 90, 30).contains("Details"));
+    }
+
+    #[test]
+    fn the_panel_shows_findings_changes_and_activity() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        ws.handle_event(&command(1, "rm -rf /"));
+        ws.tick();
+        ws.panes[0].git = crate::pane::GitState::NotARepo;
+        let lines = panel_lines(&ws.panes[0], OffsetDateTime::now_utc());
+        let text = text_of(&lines);
+        assert!(text.contains("Trust  RED"), "{text}");
+        assert!(text.contains("✗ ran `rm -rf /`"), "{text}");
+        assert!(text.contains("Not a git repository."), "{text}");
+        assert!(text.contains("$ rm -rf /"), "{text}");
+    }
+
+    #[test]
+    fn a_clean_session_says_so() {
+        let (ws, _, _) = workspace_with(&["alpha"]);
+        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc()));
+        assert!(text.contains("Nothing looks off."), "{text}");
+        assert!(text.contains("Checking repository..."), "{text}");
+        assert!(text.contains("Nothing yet."), "{text}");
+    }
+
+    #[test]
+    fn the_change_summary_lists_files_and_caps_the_list() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        let files = (0..12)
+            .map(|i| {
+                let mut f = FileChange::new(format!("src/f{i}.rs"), ChangeKind::Modified);
+                f.added = vec!["x".into(); 3];
+                f.removed = vec!["y".into()];
+                f
+            })
+            .collect();
+        ws.panes[0].set_diff(Diff { files });
+        ws.panes[0].git = crate::pane::GitState::NotARepo; // ignored once a diff exists? no
+                                                           // With a ready repository the summary is shown; emulate with a fake.
+        struct Fake;
+        impl crate::pane::DiffSource for Fake {
+            fn diff(&self) -> std::io::Result<Diff> {
+                Ok(Diff::default())
+            }
+        }
+        ws.panes[0].git = crate::pane::GitState::Ready(std::sync::Arc::new(Fake));
+        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc()));
+        assert!(text.contains("12 file(s), +36 -12"), "{text}");
+        assert!(text.contains("M src/f0.rs +3 -1"), "{text}");
+        assert!(text.contains("...and 4 more"), "{text}");
+        assert!(!text.contains("src/f8.rs"), "{text}");
+    }
+
+    #[test]
+    fn recent_activity_is_newest_first_with_ages() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        let now = OffsetDateTime::now_utc();
+        for (secs_ago, text) in [(120, "older"), (5, "newer")] {
+            ws.handle_event(&Event {
+                session_id: SessionId(1),
+                ts: now - time::Duration::seconds(secs_ago),
+                kind: EventKind::Message { text: text.into() },
+            });
+        }
+        let text = text_of(&panel_lines(&ws.panes[0], now));
+        let newer = text.find("newer").unwrap();
+        let older = text.find("older").unwrap();
+        assert!(newer < older, "{text}");
+        assert!(text.contains("2m  older"), "{text}");
+        assert!(text.contains("5s  newer"), "{text}");
+    }
+
+    #[test]
     fn footer_changes_with_focus_and_confirmation() {
         let (mut ws, _, _) = workspace_with(&["alpha"]);
         assert!(footer_text(&ws).contains("Enter attach"));
         assert!(footer_text(&ws).contains("c Claude Code"));
+        assert!(footer_text(&ws).contains("t details"));
         ws.handle_key(press(KeyCode::Char('x')));
-        assert!(footer_text(&ws).contains("press x again") || footer_text(&ws).contains("x again"));
+        assert!(footer_text(&ws).contains("x again"));
         ws.handle_key(press(KeyCode::Char('j')));
         ws.handle_key(press(KeyCode::Enter));
         assert!(footer_text(&ws).contains("Ctrl+] detach"));

@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::num::NonZeroU16;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sakshi_pty::{OutputReceiver, PtySession, SpawnConfig, TermSize};
@@ -29,12 +30,15 @@ struct Tui {
 }
 
 impl Tui {
-    fn start(args: &[&str]) -> Self {
+    fn start(args: &[&str], data_dir: &Path) -> Self {
         let (pty, rx) = PtySession::spawn(SpawnConfig {
             program: env!("CARGO_BIN_EXE_sakshi").to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
             cwd: None,
-            env: Vec::new(),
+            env: vec![(
+                "SAKSHI_DATA_DIR".to_string(),
+                data_dir.to_string_lossy().into_owned(),
+            )],
             size: TermSize {
                 rows: ROWS,
                 cols: COLS,
@@ -120,7 +124,9 @@ impl Tui {
 
 #[tokio::test]
 async fn runs_a_shell_detaches_starts_a_second_session_and_quits() {
-    let mut tui = Tui::start(&["--no-notify", SHELL]);
+    let data_dir = std::env::temp_dir().join(format!("sakshi-e2e-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let mut tui = Tui::start(&["--no-notify", SHELL], &data_dir);
 
     // The first session starts attached, beside the session list.
     tui.wait_for("the session list", |s| {
@@ -142,6 +148,13 @@ async fn runs_a_shell_detaches_starts_a_second_session_and_quits() {
     tui.wait_for("the list footer", |s| s.contains("Enter attach"))
         .await;
 
+    // `t` toggles the details panel with the trust verdict.
+    tui.send(b"t");
+    tui.wait_for("the details panel", |s| {
+        s.contains("Details") && s.contains("Trust  GREEN")
+    })
+    .await;
+
     // `n` starts a second session and attaches to it.
     tui.send(b"n");
     tui.wait_for("a second session", |s| {
@@ -159,4 +172,20 @@ async fn runs_a_shell_detaches_starts_a_second_session_and_quits() {
     tui.send(b"q");
 
     assert!(tui.wait_for_exit().await, "sakshi should exit cleanly");
+
+    // One activity log per session, each starting with the session record.
+    let logs = sakshi_store::list_logs(&sakshi_store::sessions_dir(&data_dir)).unwrap();
+    assert_eq!(logs.len(), 2, "one log per session: {logs:?}");
+    for log in &logs {
+        let events = sakshi_store::read_events(&log.path).unwrap();
+        assert!(
+            matches!(
+                events.first().map(|e| &e.kind),
+                Some(sakshi_core::EventKind::Session { .. })
+            ),
+            "{}: {events:?}",
+            log.path.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&data_dir);
 }

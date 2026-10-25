@@ -1,0 +1,16 @@
+[package]
+name = "sakshi-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+directories = "6"
+sakshi-core = { path = "../core" }
+sakshi-ipc = { path = "../ipc" }
+time = "0.3"
+tracing = "0.1"
+
+[lints]
+workspace = true

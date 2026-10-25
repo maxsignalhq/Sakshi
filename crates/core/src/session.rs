@@ -62,6 +62,16 @@ pub enum AgentKind {
     Generic,
 }
 
+impl AgentKind {
+    /// The name used in logs, e.g. `claude`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentKind::Claude => "claude",
+            AgentKind::Generic => "generic",
+        }
+    }
+}
+
 /// Lifecycle state of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {

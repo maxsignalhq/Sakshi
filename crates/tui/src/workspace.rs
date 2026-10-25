@@ -1,14 +1,23 @@
 //! The set of sessions and what the user is doing with them.
 //!
-//! Pure state: no I/O happens here. Key presses come in, and the result says
-//! what the caller must do (quit, or start a new session).
+//! Pure state: no I/O happens here. Key presses and events come in; the
+//! result says what the caller must do (quit, start a session, compute a
+//! diff). Everything that happens is published on the event bus, which is how
+//! the activity log hears about it.
+
+use std::sync::Arc;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use sakshi_core::{Event, SessionId, SessionState};
+use ratatui::layout::Rect;
+use sakshi_core::{Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState};
 use sakshi_pty::TermSize;
 
+use crate::layout;
 use crate::notify::Notifier;
-use crate::pane::Pane;
+use crate::pane::{DiffSource, GitState, Pane};
+
+/// Ticks (100 ms each) between diff refreshes of a working session.
+const DIFF_REFRESH_TICKS: u64 = 100;
 
 /// Where keyboard input goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,9 +70,14 @@ pub(crate) struct Workspace {
     pub confirm: Option<Confirm>,
     /// One-off message for the footer, cleared by the next key press.
     pub notice: Option<String>,
-    pub size: TermSize,
     pub agents: Vec<AgentInfo>,
+    /// Whether the details panel is switched on.
+    pub show_panel: bool,
+    screen: Rect,
     notifier: Box<dyn Notifier>,
+    bus: EventBus,
+    diff_queue: Vec<SessionId>,
+    ticks: u64,
 }
 
 /// Whether `key` is the detach chord, Ctrl+].
@@ -75,17 +89,31 @@ fn is_detach_chord(key: KeyEvent) -> bool {
 }
 
 impl Workspace {
-    pub fn new(size: TermSize, agents: Vec<AgentInfo>, notifier: Box<dyn Notifier>) -> Self {
+    pub fn new(
+        screen: Rect,
+        agents: Vec<AgentInfo>,
+        notifier: Box<dyn Notifier>,
+        bus: EventBus,
+    ) -> Self {
         Self {
             panes: Vec::new(),
             selected: 0,
             focus: Focus::List,
             confirm: None,
             notice: None,
-            size,
             agents,
+            show_panel: false,
+            screen,
             notifier,
+            bus,
+            diff_queue: Vec::new(),
+            ticks: 0,
         }
+    }
+
+    /// The size every session's terminal should have right now.
+    pub fn pty_size(&self) -> TermSize {
+        layout::pty_size(self.screen, self.show_panel)
     }
 
     pub fn selected_pane(&self) -> Option<&Pane> {
@@ -99,6 +127,14 @@ impl Workspace {
 
     /// Add a session. With `attach`, select it and send keys to it.
     pub fn add_pane(&mut self, pane: Pane, attach: bool) {
+        self.bus.publish(&Event::now(
+            pane.session.id,
+            EventKind::Session {
+                name: pane.session.name.clone(),
+                agent: pane.session.kind.as_str().to_string(),
+                cwd: pane.session.working_dir.display().to_string(),
+            },
+        ));
         self.panes.push(pane);
         if attach {
             self.selected = self.panes.len() - 1;
@@ -134,6 +170,9 @@ impl Workspace {
         // After the process ended there is nothing to type into.
         if is_detach_chord(key) || pane.exit.is_some() {
             self.focus = Focus::List;
+            // Whatever the user just did in there is worth a look.
+            let id = pane.session.id;
+            self.request_diff(id);
         } else {
             pane.send_key(key);
         }
@@ -156,6 +195,12 @@ impl Workspace {
             KeyCode::Char('n') => return Outcome::Spawn(NewSession::Shell),
             KeyCode::Char('x') => self.close_selected(pending),
             KeyCode::Char('q') => return self.quit(pending),
+            KeyCode::Char('t') | KeyCode::Tab => self.toggle_panel(),
+            KeyCode::Char('r') => {
+                if let Some(id) = self.selected_pane().map(|p| p.session.id) {
+                    self.request_diff(id);
+                }
+            }
             KeyCode::Char(c) => {
                 if let Some(agent) = self.agents.iter().find(|a| a.key == c) {
                     return Outcome::Spawn(NewSession::Agent(agent.program.clone()));
@@ -203,6 +248,18 @@ impl Workspace {
         }
     }
 
+    fn toggle_panel(&mut self) {
+        self.show_panel = !self.show_panel;
+        self.resize_panes();
+    }
+
+    fn resize_panes(&mut self) {
+        let size = self.pty_size();
+        for pane in &mut self.panes {
+            pane.resize(size);
+        }
+    }
+
     /// Route child output to its pane.
     pub fn handle_output(&mut self, id: SessionId, bytes: &[u8]) {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.session.id == id) {
@@ -210,8 +267,8 @@ impl Workspace {
         }
     }
 
-    /// Apply an agent event to its session and notify if the session now needs
-    /// the user. Events for unknown sessions are ignored.
+    /// Apply an agent event to its session, publish it, and notify if the
+    /// session now needs the user. Events for unknown sessions are ignored.
     pub fn handle_event(&mut self, event: &Event) {
         let Some(index) = self
             .panes
@@ -220,27 +277,141 @@ impl Workspace {
         else {
             return;
         };
+        self.bus.publish(event);
         if let Some(state) = self.panes[index].apply(event) {
-            self.notify_if_needed(index, state);
+            self.on_state_change(index, state);
         }
+    }
+
+    fn on_state_change(&mut self, index: usize, state: SessionState) {
+        self.notify_if_needed(index, state);
+        // The agent paused or stopped: a good moment to see what it changed.
+        if matches!(
+            state,
+            SessionState::Waiting | SessionState::Done | SessionState::Error
+        ) {
+            let id = self.panes[index].session.id;
+            self.request_diff(id);
+        }
+    }
+
+    /// Housekeeping for the 100 ms tick: detect exits, refresh stale trust
+    /// verdicts, and re-diff sessions that are busy working.
+    pub fn tick(&mut self) {
+        self.poll_exits();
+        self.ticks += 1;
+        if self.ticks.is_multiple_of(DIFF_REFRESH_TICKS) {
+            let working: Vec<SessionId> = self
+                .panes
+                .iter()
+                .filter(|p| p.session.state == SessionState::Working)
+                .map(|p| p.session.id)
+                .collect();
+            for id in working {
+                self.request_diff(id);
+            }
+        }
+        self.refresh_trust();
     }
 
     /// Detect processes that have exited since the last call.
     pub fn poll_exits(&mut self) {
         for index in 0..self.panes.len() {
             match self.panes[index].poll_exit() {
-                Ok(Some(state)) => self.notify_if_needed(index, state),
+                Ok(Some(state)) => {
+                    let id = self.panes[index].session.id;
+                    self.bus.publish(&Event::now(id, EventKind::State(state)));
+                    self.on_state_change(index, state);
+                }
                 Ok(None) => {}
                 Err(e) => tracing::warn!("checking session exit failed: {e}"),
             }
         }
     }
 
-    pub fn resize(&mut self, size: TermSize) {
-        self.size = size;
-        for pane in &mut self.panes {
-            pane.resize(size);
+    fn refresh_trust(&mut self) {
+        for index in 0..self.panes.len() {
+            let before = self.panes[index].trust.badge;
+            let Some(report) = self.panes[index].refresh_trust().cloned() else {
+                continue;
+            };
+            let id = self.panes[index].session.id;
+            self.bus.publish(&Event::now(
+                id,
+                EventKind::Trust {
+                    badge: report.badge,
+                    findings: report.findings.clone(),
+                },
+            ));
+            if report.badge == Badge::Red && before != Badge::Red && !self.is_attached(index) {
+                let name = self.panes[index].session.name.clone();
+                let reason = report
+                    .findings
+                    .first()
+                    .map(|f| f.reason.clone())
+                    .unwrap_or_default();
+                self.notifier
+                    .notify(&format!("{name}: trust alert"), &reason);
+            }
         }
+    }
+
+    /// Ask for a fresh diff of a session. Duplicates are merged.
+    fn request_diff(&mut self, id: SessionId) {
+        if !self.diff_queue.contains(&id) {
+            self.diff_queue.push(id);
+        }
+    }
+
+    /// Diffs the caller should compute now. Sessions whose repository snapshot
+    /// is not ready are skipped, and a session already being diffed is
+    /// retried when its current diff lands.
+    pub fn take_diff_requests(&mut self) -> Vec<(SessionId, Arc<dyn DiffSource>)> {
+        let mut jobs = Vec::new();
+        for id in std::mem::take(&mut self.diff_queue) {
+            let Some(pane) = self.panes.iter_mut().find(|p| p.session.id == id) else {
+                continue;
+            };
+            let GitState::Ready(baseline) = &pane.git else {
+                continue;
+            };
+            if pane.diff_in_flight {
+                pane.diff_pending = true;
+            } else {
+                pane.diff_in_flight = true;
+                jobs.push((id, baseline.clone()));
+            }
+        }
+        jobs
+    }
+
+    /// Record the outcome of capturing a session's repository snapshot.
+    pub fn set_baseline(&mut self, id: SessionId, baseline: Option<Arc<dyn DiffSource>>) {
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.session.id == id) {
+            pane.git = match baseline {
+                Some(baseline) => GitState::Ready(baseline),
+                None => GitState::NotARepo,
+            };
+        }
+    }
+
+    /// A requested diff finished. `None` means it failed.
+    pub fn finish_diff(&mut self, id: SessionId, diff: Option<Diff>) {
+        let Some(pane) = self.panes.iter_mut().find(|p| p.session.id == id) else {
+            return;
+        };
+        pane.diff_in_flight = false;
+        if let Some(diff) = diff {
+            pane.set_diff(diff);
+        }
+        if std::mem::take(&mut pane.diff_pending) {
+            self.request_diff(id);
+        }
+    }
+
+    pub fn resize(&mut self, screen: Rect) {
+        self.screen = screen;
+        self.resize_panes();
     }
 
     /// Kill every running session. Used on shutdown.
@@ -280,8 +451,9 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     use ratatui::crossterm::event::KeyEventKind;
-    use sakshi_core::{AgentKind, EventKind, Session};
+    use sakshi_core::{AgentKind, ChangeKind, FileChange, Session, Severity};
     use sakshi_pty::{ExitInfo, PtyError};
+    use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
     use crate::pane::Pty;
@@ -327,32 +499,68 @@ pub(crate) mod tests {
         }
     }
 
-    const SIZE: TermSize = TermSize { rows: 10, cols: 40 };
+    const SCREEN: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 160,
+        height: 30,
+    };
 
     pub fn fake_pane(id: u64, name: &str) -> (Pane, Arc<Mutex<FakeState>>) {
         let state = Arc::new(Mutex::new(FakeState::default()));
         let session = Session::new(SessionId(id), name, AgentKind::Generic, PathBuf::from("."));
+        let size = layout::pty_size(SCREEN, false);
         (
-            Pane::new(session, Box::new(FakePty(state.clone())), SIZE),
+            Pane::new(session, Box::new(FakePty(state.clone())), size),
             state,
         )
     }
 
-    pub fn workspace_with(names: &[&str]) -> (Workspace, Vec<Arc<Mutex<FakeState>>>, Notes) {
+    pub struct Fixture {
+        pub ws: Workspace,
+        pub states: Vec<Arc<Mutex<FakeState>>>,
+        pub notes: Notes,
+        pub log: UnboundedReceiver<Event>,
+    }
+
+    impl Fixture {
+        /// Everything published on the bus so far.
+        pub fn published(&mut self) -> Vec<Event> {
+            let mut out = Vec::new();
+            while let Ok(ev) = self.log.try_recv() {
+                out.push(ev);
+            }
+            out
+        }
+    }
+
+    pub fn fixture(names: &[&str]) -> Fixture {
         let notes = Notes::default();
         let agents = vec![AgentInfo {
             name: "Claude Code".into(),
             program: "claude".into(),
             key: 'c',
         }];
-        let mut ws = Workspace::new(SIZE, agents, Box::new(notes.clone()));
+        let bus = EventBus::new();
+        let log = bus.subscribe();
+        let mut ws = Workspace::new(SCREEN, agents, Box::new(notes.clone()), bus);
         let mut states = Vec::new();
         for (i, name) in names.iter().enumerate() {
             let (pane, state) = fake_pane(i as u64 + 1, name);
             ws.add_pane(pane, false);
             states.push(state);
         }
-        (ws, states, notes)
+        Fixture {
+            ws,
+            states,
+            notes,
+            log,
+        }
+    }
+
+    pub fn workspace_with(names: &[&str]) -> (Workspace, Vec<Arc<Mutex<FakeState>>>, Notes) {
+        let f = fixture(names);
+        (f.ws, f.states, f.notes)
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -365,6 +573,13 @@ pub(crate) mod tests {
 
     fn state_event(id: u64, state: SessionState) -> Event {
         Event::now(SessionId(id), EventKind::State(state))
+    }
+
+    fn exited(success: bool) -> Option<ExitInfo> {
+        Some(ExitInfo {
+            success,
+            code: u32::from(!success),
+        })
     }
 
     #[test]
@@ -443,10 +658,7 @@ pub(crate) mod tests {
     fn a_key_after_exit_returns_to_the_list_without_writing() {
         let (mut ws, states, _) = workspace_with(&["a"]);
         ws.handle_key(press(KeyCode::Enter));
-        states[0].lock().unwrap().exit = Some(ExitInfo {
-            success: true,
-            code: 0,
-        });
+        states[0].lock().unwrap().exit = exited(true);
         ws.poll_exits();
         ws.handle_key(press(KeyCode::Char('z')));
         assert_eq!(ws.focus, Focus::List);
@@ -469,7 +681,8 @@ pub(crate) mod tests {
 
     #[test]
     fn agent_key_does_nothing_when_no_agent_is_available() {
-        let mut ws = Workspace::new(SIZE, Vec::new(), Box::new(Notes::default()));
+        let (mut ws, _, _) = workspace_with(&["a"]);
+        ws.agents.clear();
         assert_eq!(ws.handle_key(press(KeyCode::Char('c'))), Outcome::Continue);
     }
 
@@ -500,10 +713,7 @@ pub(crate) mod tests {
     #[test]
     fn an_ended_session_closes_without_confirmation() {
         let (mut ws, states, _) = workspace_with(&["a"]);
-        states[0].lock().unwrap().exit = Some(ExitInfo {
-            success: false,
-            code: 1,
-        });
+        states[0].lock().unwrap().exit = exited(false);
         ws.poll_exits();
         ws.handle_key(press(KeyCode::Char('x')));
         assert!(ws.panes.is_empty());
@@ -591,10 +801,7 @@ pub(crate) mod tests {
     #[test]
     fn a_background_exit_notifies_with_the_right_headline() {
         let (mut ws, states, notes) = workspace_with(&["a", "b"]);
-        states[1].lock().unwrap().exit = Some(ExitInfo {
-            success: false,
-            code: 3,
-        });
+        states[1].lock().unwrap().exit = exited(false);
         ws.poll_exits();
         ws.poll_exits(); // a second poll must not notify again
         let sent = notes.0.lock().unwrap().clone();
@@ -606,11 +813,11 @@ pub(crate) mod tests {
     #[test]
     fn resize_reaches_every_session() {
         let (mut ws, states, _) = workspace_with(&["a", "b"]);
-        let size = TermSize { rows: 30, cols: 99 };
-        ws.resize(size);
-        assert_eq!(ws.size, size);
+        let screen = Rect::new(0, 0, 120, 40);
+        ws.resize(screen);
+        let expected = layout::pty_size(screen, false);
         for s in &states {
-            assert_eq!(s.lock().unwrap().size, Some(size));
+            assert_eq!(s.lock().unwrap().size, Some(expected));
         }
     }
 
@@ -627,5 +834,211 @@ pub(crate) mod tests {
         ws.notice = Some("oops".into());
         ws.handle_key(press(KeyCode::Char('j')));
         assert_eq!(ws.notice, None);
+    }
+
+    // ---- panel
+
+    #[test]
+    fn toggling_the_panel_resizes_every_terminal() {
+        let (mut ws, states, _) = workspace_with(&["a", "b"]);
+        assert!(!ws.show_panel);
+        ws.handle_key(press(KeyCode::Char('t')));
+        assert!(ws.show_panel);
+        let with_panel = layout::pty_size(SCREEN, true);
+        assert!(with_panel.cols < layout::pty_size(SCREEN, false).cols);
+        for s in &states {
+            assert_eq!(s.lock().unwrap().size, Some(with_panel));
+        }
+        ws.handle_key(press(KeyCode::Tab));
+        assert!(!ws.show_panel);
+        assert_eq!(
+            states[0].lock().unwrap().size,
+            Some(layout::pty_size(SCREEN, false))
+        );
+    }
+
+    // ---- bus
+
+    #[test]
+    fn adding_a_session_publishes_its_description() {
+        let mut f = fixture(&["alpha"]);
+        let published = f.published();
+        assert_eq!(published.len(), 1);
+        assert!(matches!(
+            &published[0].kind,
+            EventKind::Session { name, agent, .. } if name == "alpha" && agent == "generic"
+        ));
+    }
+
+    #[test]
+    fn agent_events_and_exits_are_published_but_stray_events_are_not() {
+        let mut f = fixture(&["a"]);
+        f.published();
+        f.ws.handle_event(&state_event(1, SessionState::Working));
+        f.ws.handle_event(&state_event(99, SessionState::Working));
+        f.states[0].lock().unwrap().exit = exited(true);
+        f.ws.poll_exits();
+        let kinds: Vec<_> = f.published().into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                EventKind::State(SessionState::Working),
+                EventKind::State(SessionState::Done),
+            ]
+        );
+    }
+
+    // ---- trust
+
+    fn command_event(id: u64, command: &str) -> Event {
+        Event::now(
+            SessionId(id),
+            EventKind::Command {
+                command: command.into(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_dangerous_command_turns_the_badge_red_and_is_published_once() {
+        let mut f = fixture(&["a"]);
+        f.published();
+        f.ws.handle_event(&command_event(1, "git push --force"));
+        f.ws.tick();
+        f.ws.tick(); // nothing changed, so nothing more is published
+        assert_eq!(f.ws.panes[0].trust.badge, Badge::Red);
+        let trust: Vec<_> = f
+            .published()
+            .into_iter()
+            .filter(|e| matches!(e.kind, EventKind::Trust { .. }))
+            .collect();
+        assert_eq!(trust.len(), 1);
+        match &trust[0].kind {
+            EventKind::Trust { badge, findings } => {
+                assert_eq!(*badge, Badge::Red);
+                assert_eq!(findings[0].severity, Severity::Alert);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_background_session_turning_red_notifies_once() {
+        let mut f = fixture(&["a"]);
+        f.ws.handle_event(&command_event(1, "rm -rf /"));
+        f.ws.tick();
+        f.ws.handle_event(&command_event(1, "git reset --hard"));
+        f.ws.tick();
+        let sent = f.notes.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "a: trust alert");
+        assert!(sent[0].1.contains("rm -rf /"));
+    }
+
+    #[test]
+    fn the_attached_session_turning_red_does_not_notify() {
+        let mut f = fixture(&["a"]);
+        f.ws.handle_key(press(KeyCode::Enter));
+        f.ws.handle_event(&command_event(1, "rm -rf /"));
+        f.ws.tick();
+        assert_eq!(f.ws.panes[0].trust.badge, Badge::Red);
+        assert!(f.notes.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_diff_feeds_the_trust_verdict() {
+        let mut f = fixture(&["a"]);
+        let diff = Diff {
+            files: vec![FileChange::new("tests/a_test.py", ChangeKind::Deleted)],
+        };
+        f.ws.panes[0].git = GitState::Ready(dummy_baseline());
+        f.ws.finish_diff(SessionId(1), Some(diff));
+        f.ws.tick();
+        assert_eq!(f.ws.panes[0].trust.badge, Badge::Red);
+    }
+
+    // ---- diff scheduling
+
+    struct FakeSource;
+
+    impl DiffSource for FakeSource {
+        fn diff(&self) -> std::io::Result<Diff> {
+            Ok(Diff::default())
+        }
+    }
+
+    fn dummy_baseline() -> Arc<dyn DiffSource> {
+        Arc::new(FakeSource)
+    }
+
+    #[test]
+    fn state_changes_that_need_attention_request_a_diff() {
+        let mut f = fixture(&["a"]);
+        f.ws.panes[0].git = GitState::Ready(dummy_baseline());
+        f.ws.handle_event(&state_event(1, SessionState::Working));
+        assert!(f.ws.take_diff_requests().is_empty());
+        f.ws.handle_event(&state_event(1, SessionState::Waiting));
+        let jobs = f.ws.take_diff_requests();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0, SessionId(1));
+    }
+
+    #[test]
+    fn requests_without_a_ready_baseline_are_dropped() {
+        let mut f = fixture(&["a", "b"]);
+        f.ws.panes[1].git = GitState::NotARepo;
+        f.ws.handle_event(&state_event(1, SessionState::Waiting));
+        f.ws.handle_event(&state_event(2, SessionState::Waiting));
+        assert!(f.ws.take_diff_requests().is_empty());
+    }
+
+    #[test]
+    fn one_diff_runs_at_a_time_and_a_pending_request_is_retried() {
+        let mut f = fixture(&["a"]);
+        f.ws.panes[0].git = GitState::Ready(dummy_baseline());
+        f.ws.handle_key(press(KeyCode::Char('r')));
+        f.ws.handle_key(press(KeyCode::Char('r'))); // merged with the first
+        assert_eq!(f.ws.take_diff_requests().len(), 1);
+
+        f.ws.handle_key(press(KeyCode::Char('r')));
+        assert!(f.ws.take_diff_requests().is_empty()); // still running
+        f.ws.finish_diff(SessionId(1), Some(Diff::default()));
+        assert_eq!(f.ws.take_diff_requests().len(), 1); // retried
+        f.ws.finish_diff(SessionId(1), None); // failure clears the flag too
+        assert!(!f.ws.panes[0].diff_in_flight);
+        assert!(f.ws.take_diff_requests().is_empty());
+    }
+
+    #[test]
+    fn detaching_requests_a_diff() {
+        let mut f = fixture(&["a"]);
+        f.ws.panes[0].git = GitState::Ready(dummy_baseline());
+        f.ws.handle_key(press(KeyCode::Enter));
+        f.ws.handle_key(ctrl(']'));
+        assert_eq!(f.ws.take_diff_requests().len(), 1);
+    }
+
+    #[test]
+    fn working_sessions_are_re_diffed_periodically() {
+        let mut f = fixture(&["a", "b"]);
+        for pane in &mut f.ws.panes {
+            pane.git = GitState::Ready(dummy_baseline());
+        }
+        f.ws.handle_event(&state_event(1, SessionState::Working));
+        for _ in 0..DIFF_REFRESH_TICKS {
+            f.ws.tick();
+        }
+        let jobs = f.ws.take_diff_requests();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0, SessionId(1));
+    }
+
+    #[test]
+    fn baseline_results_are_recorded() {
+        let mut f = fixture(&["a", "b"]);
+        f.ws.set_baseline(SessionId(1), None);
+        f.ws.set_baseline(SessionId(2), Some(dummy_baseline()));
+        assert!(matches!(f.ws.panes[0].git, GitState::NotARepo));
+        assert!(matches!(f.ws.panes[1].git, GitState::Ready(_)));
     }
 }

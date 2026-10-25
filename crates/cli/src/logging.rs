@@ -3,7 +3,6 @@
 use std::fs::OpenOptions;
 use std::sync::Mutex;
 
-use directories::ProjectDirs;
 use tracing_subscriber::EnvFilter;
 
 /// Start logging to `sakshi.log` in the user's data directory.
@@ -11,11 +10,10 @@ use tracing_subscriber::EnvFilter;
 /// Best effort: if the file cannot be opened, logging stays off. The level
 /// comes from `SAKSHI_LOG` (default `warn`).
 pub fn init() {
-    let Some(dirs) = ProjectDirs::from("dev", "maxsignalhq", "sakshi") else {
+    let Some(dir) = sakshi_store::data_dir() else {
         return;
     };
-    let dir = dirs.data_local_dir();
-    if std::fs::create_dir_all(dir).is_err() {
+    if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let Ok(file) = OpenOptions::new()

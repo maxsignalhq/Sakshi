@@ -1752,11 +1752,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "directories",
  "sakshi-adapters",
  "sakshi-core",
  "sakshi-ipc",
  "sakshi-pty",
+ "sakshi-store",
  "sakshi-tui",
  "serde_json",
  "tokio",
@@ -1779,6 +1779,14 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "time",
+ "tokio",
+]
+
+[[package]]
+name = "sakshi-git"
+version = "0.1.0"
+dependencies = [
+ "sakshi-core",
 ]
 
 [[package]]
@@ -1803,6 +1811,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sakshi-store"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "sakshi-core",
+ "sakshi-ipc",
+ "time",
+ "tracing",
+]
+
+[[package]]
 name = "sakshi-tui"
 version = "0.1.0"
 dependencies = [
@@ -1810,9 +1829,12 @@ dependencies = [
  "ratatui",
  "sakshi-adapters",
  "sakshi-core",
+ "sakshi-git",
  "sakshi-ipc",
  "sakshi-pty",
+ "sakshi-store",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tracing",
  "vt100",

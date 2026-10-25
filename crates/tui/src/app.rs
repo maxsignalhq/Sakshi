@@ -2,6 +2,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -9,15 +10,17 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use sakshi_adapters::LaunchContext;
-use sakshi_core::{AgentKind, Event, Session, SessionId};
+use sakshi_core::{AgentKind, Diff, Event, EventBus, Session, SessionId};
+use sakshi_git::Baseline;
 use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
 use sakshi_pty::{OutputReceiver, PtyError, PtySession, SpawnConfig, TermSize};
+use sakshi_store::{sessions_dir, LogSet};
 use tokio::sync::mpsc;
 
 use crate::notify::{DesktopNotifier, NoopNotifier, Notifier};
-use crate::pane::Pane;
+use crate::pane::{DiffSource, Pane};
+use crate::ui;
 use crate::workspace::{AgentInfo, NewSession, Outcome, Workspace};
-use crate::{layout, ui};
 
 /// Errors that end the TUI.
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +48,8 @@ pub struct RunConfig {
     pub shell: String,
     /// Whether to show desktop notifications.
     pub notifications: bool,
+    /// Where to keep activity logs; `None` turns logging off.
+    pub data_dir: Option<PathBuf>,
 }
 
 /// Everything the event loop reacts to, funnelled into one channel.
@@ -53,6 +58,10 @@ enum AppEvent {
     Output(SessionId, Vec<u8>),
     Agent(Event),
     AgentsProbed(Vec<AgentInfo>),
+    /// A session's repository snapshot finished (`None`: not a repository).
+    Baseline(SessionId, Option<Arc<dyn DiffSource>>),
+    /// A requested diff finished (`None`: it failed).
+    Diff(SessionId, Option<Diff>),
     Tick,
 }
 
@@ -127,6 +136,7 @@ impl Launcher {
             size,
         })?;
         self.forward_output(id, output);
+        self.capture_baseline(id, cwd.clone());
         let session = Session::new(id, name, kind, cwd);
         Ok(Pane::new(session, Box::new(pty), size))
     }
@@ -141,16 +151,34 @@ impl Launcher {
             }
         });
     }
+
+    /// Snapshot the session's repository off the UI thread: git can be slow.
+    fn capture_baseline(&self, id: SessionId, cwd: PathBuf) {
+        let events = self.events.clone();
+        tokio::task::spawn_blocking(move || {
+            let baseline = Baseline::capture(&cwd).map(|b| Arc::new(b) as Arc<dyn DiffSource>);
+            let _ = events.send(AppEvent::Baseline(id, baseline));
+        });
+    }
 }
 
-fn pty_size_of(terminal: &DefaultTerminal) -> io::Result<TermSize> {
-    let screen = terminal.size()?;
-    Ok(layout::pty_size(Rect::new(
-        0,
-        0,
-        screen.width,
-        screen.height,
-    )))
+/// Write every event published on `bus` to the activity log, until the bus is
+/// dropped. Runs on its own thread because it does blocking file I/O.
+fn spawn_log_writer(bus: &EventBus, data_dir: PathBuf) -> io::Result<thread::JoinHandle<()>> {
+    let mut events = bus.subscribe();
+    thread::Builder::new()
+        .name("sakshi-log".into())
+        .spawn(move || {
+            let mut logs = LogSet::new(sessions_dir(&data_dir));
+            while let Some(event) = events.blocking_recv() {
+                logs.record(&event);
+            }
+        })
+}
+
+fn screen_rect(terminal: &DefaultTerminal) -> io::Result<Rect> {
+    let size = terminal.size()?;
+    Ok(Rect::new(0, 0, size.width, size.height))
 }
 
 async fn run_loop(
@@ -206,16 +234,27 @@ async fn run_loop(
         let _ = probe_tx.send(AppEvent::AgentsProbed(probe_agents()));
     });
 
+    let bus = EventBus::new();
+    let log_thread = match config.data_dir.clone() {
+        Some(dir) => spawn_log_writer(&bus, dir).ok(),
+        None => None,
+    };
+
     let notifier: Box<dyn Notifier> = if config.notifications {
         Box::new(DesktopNotifier)
     } else {
         Box::new(NoopNotifier)
     };
-    let size = pty_size_of(terminal)?;
-    let mut ws = Workspace::new(size, Vec::new(), notifier);
+    let mut ws = Workspace::new(screen_rect(terminal)?, Vec::new(), notifier, bus);
 
     let name = ws.unique_name(&config.name);
-    let first = launcher.spawn(name, config.program, config.args, config.cwd.clone(), size)?;
+    let first = launcher.spawn(
+        name,
+        config.program,
+        config.args,
+        config.cwd.clone(),
+        ws.pty_size(),
+    )?;
     ws.add_pane(first, true);
 
     loop {
@@ -232,10 +271,34 @@ async fn run_loop(
         if quit {
             break;
         }
+        start_diffs(&mut ws, &tx);
     }
 
     ws.kill_all();
+    // Dropping the workspace drops the last bus handle, which lets the log
+    // writer drain its queue and stop; wait for it so the tail is on disk.
+    drop(ws);
+    if let Some(thread) = log_thread {
+        let _ = thread.join();
+    }
     Ok(())
+}
+
+/// Run the diffs the workspace asked for, off the UI thread.
+fn start_diffs(ws: &mut Workspace, tx: &mpsc::UnboundedSender<AppEvent>) {
+    for (id, source) in ws.take_diff_requests() {
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let diff = match source.diff() {
+                Ok(diff) => Some(diff),
+                Err(e) => {
+                    tracing::warn!("could not diff session {id}: {e}");
+                    None
+                }
+            };
+            let _ = tx.send(AppEvent::Diff(id, diff));
+        });
+    }
 }
 
 /// Installed agents the user can start from the list.
@@ -266,13 +329,15 @@ fn handle(ws: &mut Workspace, launcher: &Launcher, shell: &str, ev: AppEvent) ->
             }
         }
         AppEvent::Input(TermEvent::Resize(width, height)) => {
-            ws.resize(layout::pty_size(Rect::new(0, 0, width, height)));
+            ws.resize(Rect::new(0, 0, width, height));
         }
         AppEvent::Input(_) => {}
         AppEvent::Output(id, bytes) => ws.handle_output(id, &bytes),
         AppEvent::Agent(event) => ws.handle_event(&event),
         AppEvent::AgentsProbed(agents) => ws.agents = agents,
-        AppEvent::Tick => ws.poll_exits(),
+        AppEvent::Baseline(id, baseline) => ws.set_baseline(id, baseline),
+        AppEvent::Diff(id, diff) => ws.finish_diff(id, diff),
+        AppEvent::Tick => ws.tick(),
     }
     false
 }
@@ -293,7 +358,7 @@ fn start_session(ws: &mut Workspace, launcher: &Launcher, shell: &str, what: New
         }
     };
     let name = ws.unique_name(&base);
-    match launcher.spawn(name, program.clone(), Vec::new(), cwd, ws.size) {
+    match launcher.spawn(name, program.clone(), Vec::new(), cwd, ws.pty_size()) {
         Ok(pane) => ws.add_pane(pane, true),
         Err(e) => ws.notice = Some(format!("Could not start {program}: {e}")),
     }

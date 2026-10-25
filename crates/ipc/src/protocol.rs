@@ -6,7 +6,7 @@
 //!
 //! See `PROTOCOL.md` for the full description.
 
-use sakshi_core::{Event, EventKind, SessionId, SessionState};
+use sakshi_core::{Badge, Event, EventKind, Finding, SessionId, SessionState, Severity};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -146,8 +146,41 @@ fn decode_kind(ty: &str, data: &Value) -> Result<EventKind, ProtocolError> {
         "message" => Ok(EventKind::Message {
             text: data_str(ty, data, "text")?,
         }),
+        "session" => Ok(EventKind::Session {
+            name: data_str(ty, data, "name")?,
+            agent: data_str(ty, data, "agent")?,
+            cwd: data_str(ty, data, "cwd")?,
+        }),
+        "trust" => decode_trust(ty, data),
         other => Err(ProtocolError::UnknownType(other.to_string())),
     }
+}
+
+fn decode_trust(ty: &str, data: &Value) -> Result<EventKind, ProtocolError> {
+    let bad = |field: &'static str| ProtocolError::Field {
+        ty: ty.to_string(),
+        field,
+    };
+    let badge = data_str(ty, data, "badge")?
+        .parse::<Badge>()
+        .map_err(|_| bad("badge"))?;
+    let items = data
+        .get("findings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("findings"))?;
+    let findings = items
+        .iter()
+        .map(|item| {
+            Ok(Finding {
+                rule: data_str(ty, item, "rule")?,
+                severity: data_str(ty, item, "severity")?
+                    .parse::<Severity>()
+                    .map_err(|_| bad("severity"))?,
+                reason: data_str(ty, item, "reason")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ProtocolError>>()?;
+    Ok(EventKind::Trust { badge, findings })
 }
 
 fn encode_data(kind: &EventKind) -> Value {
@@ -158,6 +191,20 @@ fn encode_data(kind: &EventKind) -> Value {
         EventKind::Command { command } => json!({ "command": command }),
         EventKind::TestRun { command, passed } => json!({ "command": command, "passed": passed }),
         EventKind::Message { text } => json!({ "text": text }),
+        EventKind::Session { name, agent, cwd } => {
+            json!({ "name": name, "agent": agent, "cwd": cwd })
+        }
+        EventKind::Trust { badge, findings } => json!({
+            "badge": badge.as_str(),
+            "findings": findings
+                .iter()
+                .map(|f| json!({
+                    "rule": f.rule,
+                    "severity": f.severity.as_str(),
+                    "reason": f.reason,
+                }))
+                .collect::<Vec<_>>(),
+        }),
     }
 }
 
@@ -184,6 +231,12 @@ mod tests {
                 "test_run",
             ),
             ("message", r#"{"text":"hi"}"#, "message"),
+            (
+                "session",
+                r#"{"name":"n","agent":"claude","cwd":"/x"}"#,
+                "session",
+            ),
+            ("trust", r#"{"badge":"yellow","findings":[]}"#, "trust"),
         ];
         for (ty, data, name) in cases {
             let ev = parse_line(&line(ty, data)).unwrap();
@@ -301,6 +354,27 @@ mod tests {
         assert!(matches!(
             parse_line(&line("state", r#"{"state":"napping"}"#)),
             Err(ProtocolError::Field { field: "state", .. })
+        ));
+        assert!(matches!(
+            parse_line(&line("trust", r#"{"badge":"purple","findings":[]}"#)),
+            Err(ProtocolError::Field { field: "badge", .. })
+        ));
+        assert!(matches!(
+            parse_line(&line("trust", r#"{"badge":"red"}"#)),
+            Err(ProtocolError::Field {
+                field: "findings",
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_line(&line(
+                "trust",
+                r#"{"badge":"red","findings":[{"rule":"r","severity":"dire","reason":"x"}]}"#
+            )),
+            Err(ProtocolError::Field {
+                field: "severity",
+                ..
+            })
         ));
         // A missing `data` object behaves like an empty one.
         let l = r#"{"v":1,"session_id":"1","type":"message","ts":"2026-01-01T00:00:00Z"}"#;
