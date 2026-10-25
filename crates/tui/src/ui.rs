@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use sakshi_core::{format_age, Badge, ChangeKind, Severity};
 use time::OffsetDateTime;
@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::emulator::TerminalEmulator;
 use crate::layout;
 use crate::pane::{GitState, Pane};
-use crate::workspace::{Confirm, Focus, Workspace};
+use crate::workspace::{Confirm, Focus, Overlay, Workspace};
 
 /// Files listed in the panel's change summary before "and N more".
 const MAX_FILES_SHOWN: usize = 8;
@@ -95,8 +95,9 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
     }
 
     if let Some(panel) = regions.panel {
+        let attached = ws.focus == Focus::Terminal;
         let lines = match ws.selected_pane() {
-            Some(pane) => panel_lines(pane, OffsetDateTime::now_utc()),
+            Some(pane) => panel_lines(pane, OffsetDateTime::now_utc(), attached),
             None => vec![Line::from("Nothing selected.")],
         };
         frame.render_widget(
@@ -107,9 +108,41 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
         );
     }
 
+    if let Some(overlay) = &ws.overlay {
+        draw_overlay(frame, overlay, regions.terminal);
+    }
+
     frame.render_widget(
         Paragraph::new(footer_text(ws)).style(Style::default().add_modifier(Modifier::DIM)),
         regions.footer,
+    );
+}
+
+/// A box centred over `area` holding the "while you were away" summary.
+fn draw_overlay(frame: &mut Frame, overlay: &Overlay, area: Rect) {
+    let width = area.width.saturating_sub(4).clamp(1, 72);
+    let wanted = u16::try_from(overlay.lines.len()).unwrap_or(u16::MAX);
+    let height = wanted
+        .saturating_add(4)
+        .min(area.height.saturating_sub(2).max(1));
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let mut lines: Vec<Line> = overlay.lines.iter().cloned().map(Line::from).collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "Press any key to continue",
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(format!(" {} ", overlay.title))),
+        rect,
     );
 }
 
@@ -138,7 +171,10 @@ fn kind_letter(kind: ChangeKind) -> char {
 }
 
 /// The details panel for one session: verdict, findings, changes, activity.
-pub(crate) fn panel_lines(pane: &Pane, now: OffsetDateTime) -> Vec<Line<'static>> {
+///
+/// `attached` is whether the user is looking at the session right now. The
+/// "since you last looked" digest is only for sessions they are not.
+pub(crate) fn panel_lines(pane: &Pane, now: OffsetDateTime, attached: bool) -> Vec<Line<'static>> {
     let badge = pane.trust.badge;
     let mut lines = vec![
         Line::from(vec![
@@ -163,6 +199,18 @@ pub(crate) fn panel_lines(pane: &Pane, now: OffsetDateTime) -> Vec<Line<'static>
             Span::styled(format!("  {marker} "), style),
             Span::raw(finding.reason.clone()),
         ]));
+    }
+
+    let away = pane.away_summary();
+    if !attached && !away.is_quiet() {
+        let age = format_age((now - pane.last_seen).whole_seconds());
+        lines.push(Line::raw(""));
+        lines.push(heading(&format!("Since you last looked ({age} ago)")));
+        lines.extend(
+            away.lines()
+                .into_iter()
+                .map(|l| Line::raw(format!("  {l}"))),
+        );
     }
 
     lines.push(Line::raw(""));
@@ -407,7 +455,7 @@ mod tests {
         ws.handle_event(&command(1, "rm -rf /"));
         ws.tick();
         ws.panes[0].git = crate::pane::GitState::NotARepo;
-        let lines = panel_lines(&ws.panes[0], OffsetDateTime::now_utc());
+        let lines = panel_lines(&ws.panes[0], OffsetDateTime::now_utc(), false);
         let text = text_of(&lines);
         assert!(text.contains("Trust  RED"), "{text}");
         assert!(text.contains("✗ ran `rm -rf /`"), "{text}");
@@ -418,7 +466,7 @@ mod tests {
     #[test]
     fn a_clean_session_says_so() {
         let (ws, _, _) = workspace_with(&["alpha"]);
-        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc()));
+        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc(), false));
         assert!(text.contains("Nothing looks off."), "{text}");
         assert!(text.contains("Checking repository..."), "{text}");
         assert!(text.contains("Nothing yet."), "{text}");
@@ -445,7 +493,7 @@ mod tests {
             }
         }
         ws.panes[0].git = crate::pane::GitState::Ready(std::sync::Arc::new(Fake));
-        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc()));
+        let text = text_of(&panel_lines(&ws.panes[0], OffsetDateTime::now_utc(), false));
         assert!(text.contains("12 file(s), +36 -12"), "{text}");
         assert!(text.contains("M src/f0.rs +3 -1"), "{text}");
         assert!(text.contains("...and 4 more"), "{text}");
@@ -463,12 +511,52 @@ mod tests {
                 kind: EventKind::Message { text: text.into() },
             });
         }
-        let text = text_of(&panel_lines(&ws.panes[0], now));
+        let text = text_of(&panel_lines(&ws.panes[0], now, false));
         let newer = text.find("newer").unwrap();
         let older = text.find("older").unwrap();
         assert!(newer < older, "{text}");
         assert!(text.contains("2m  older"), "{text}");
         assert!(text.contains("5s  newer"), "{text}");
+    }
+
+    #[test]
+    fn the_panel_digests_what_happened_since_you_last_looked() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        let now = OffsetDateTime::now_utc();
+        ws.panes[0].last_seen = now - time::Duration::seconds(90);
+        ws.handle_event(&Event {
+            session_id: SessionId(1),
+            ts: now - time::Duration::seconds(30),
+            kind: EventKind::FileEdit {
+                path: "src/a.rs".into(),
+            },
+        });
+        let text = text_of(&panel_lines(&ws.panes[0], now, false));
+        assert!(text.contains("Since you last looked (1m ago)"), "{text}");
+        assert!(text.contains("Edited 1 file(s): src/a.rs"), "{text}");
+        // Not shown for the session being looked at right now.
+        let attached = text_of(&panel_lines(&ws.panes[0], now, true));
+        assert!(!attached.contains("Since you last looked"), "{attached}");
+    }
+
+    #[test]
+    fn the_overlay_is_drawn_over_the_terminal_until_a_key() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        ws.panes[0].last_seen = OffsetDateTime::now_utc() - time::Duration::seconds(60);
+        ws.handle_event(&Event {
+            session_id: SessionId(1),
+            ts: OffsetDateTime::now_utc() - time::Duration::seconds(30),
+            kind: EventKind::FileEdit {
+                path: "src/a.rs".into(),
+            },
+        });
+        ws.handle_key(press(KeyCode::Enter));
+        let screen = render(&ws, 120, 30);
+        assert!(screen.contains("while you were away"), "{screen}");
+        assert!(screen.contains("Edited 1 file(s): src/a.rs"), "{screen}");
+        assert!(screen.contains("Press any key to continue"), "{screen}");
+        ws.handle_key(press(KeyCode::Char('x')));
+        assert!(!render(&ws, 120, 30).contains("while you were away"));
     }
 
     #[test]

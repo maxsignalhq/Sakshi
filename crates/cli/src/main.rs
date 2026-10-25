@@ -2,6 +2,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod history;
 mod hook;
 mod logging;
 
@@ -45,6 +46,36 @@ enum Sub {
         /// Which agent is calling, e.g. `claude`.
         agent: String,
     },
+    /// List recorded sessions, newest first.
+    Sessions {
+        /// How many sessions to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Summarise a recorded session: trust verdict, findings and what happened.
+    Report {
+        /// Session id, a unique prefix of one, or `latest`.
+        #[arg(default_value = "latest")]
+        session: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = history::Format::Md)]
+        format: history::Format,
+    },
+    /// Replay a recorded session's timeline.
+    Replay {
+        /// Session id, a unique prefix of one, or `latest`.
+        #[arg(default_value = "latest")]
+        session: String,
+        /// Play at this many times real speed; 0 prints everything at once.
+        #[arg(long, default_value_t = 0.0)]
+        speed: f64,
+    },
+}
+
+/// Where the activity logs of past sessions live.
+fn sessions_dir() -> Result<PathBuf> {
+    let data = sakshi_store::data_dir().context("cannot locate the data directory")?;
+    Ok(sakshi_store::sessions_dir(&data))
 }
 
 #[cfg(windows)]
@@ -84,10 +115,33 @@ fn run_config(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(Sub::Hook { agent }) = cli.subcommand {
-        // Hooks must never fail, print, or start a UI.
-        hook::run(&agent).await;
-        return Ok(());
+    match cli.subcommand {
+        Some(Sub::Hook { agent }) => {
+            // Hooks must never fail, print, or start a UI.
+            hook::run(&agent).await;
+            return Ok(());
+        }
+        Some(Sub::Sessions { limit }) => {
+            return history::sessions(&sessions_dir()?, limit, &mut std::io::stdout().lock());
+        }
+        Some(Sub::Report { session, format }) => {
+            return history::report(
+                &sessions_dir()?,
+                &session,
+                format,
+                &mut std::io::stdout().lock(),
+            );
+        }
+        Some(Sub::Replay { session, speed }) => {
+            return history::replay(
+                &sessions_dir()?,
+                &session,
+                speed,
+                &mut std::io::stdout().lock(),
+            )
+            .await;
+        }
+        None => {}
     }
 
     if !std::io::stdin().is_terminal() {
@@ -129,6 +183,25 @@ mod tests {
         assert_eq!(cfg.shell, default_shell());
         assert!(cfg.args.is_empty());
         assert!(!cfg.notifications);
+    }
+
+    #[test]
+    fn history_subcommands_parse() {
+        let cli = Cli::try_parse_from(["sakshi", "report"]).unwrap();
+        assert!(matches!(
+            cli.subcommand,
+            Some(Sub::Report { ref session, format: history::Format::Md }) if session == "latest"
+        ));
+        let cli = Cli::try_parse_from(["sakshi", "report", "ab12", "--format", "json"]).unwrap();
+        assert!(matches!(
+            cli.subcommand,
+            Some(Sub::Report { ref session, format: history::Format::Json }) if session == "ab12"
+        ));
+        let cli = Cli::try_parse_from(["sakshi", "replay", "--speed", "5"]).unwrap();
+        assert!(matches!(cli.subcommand, Some(Sub::Replay { speed, .. }) if speed == 5.0));
+        let cli = Cli::try_parse_from(["sakshi", "sessions", "--limit", "3"]).unwrap();
+        assert!(matches!(cli.subcommand, Some(Sub::Sessions { limit: 3 })));
+        assert!(Cli::try_parse_from(["sakshi", "report", "--format", "xml"]).is_err());
     }
 
     #[test]

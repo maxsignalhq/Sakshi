@@ -8,13 +8,17 @@
 mod bus;
 mod diff;
 mod event;
+mod report;
 mod session;
+mod summary;
 mod trust;
 
 pub use bus::EventBus;
 pub use diff::{parse_unified_diff, ChangeKind, Diff, FileChange};
 pub use event::{format_age, is_test_command, Event, EventKind};
+pub use report::{timeline_line, Report};
 pub use session::{
     AgentKind, ParseSessionIdError, ParseStateError, Session, SessionId, SessionState,
 };
+pub use summary::{summarize, Summary};
 pub use trust::{evaluate, is_test_path, Badge, Finding, ParseTrustError, Severity, TrustReport};

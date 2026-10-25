@@ -5,9 +5,12 @@ use std::io;
 use std::sync::Arc;
 
 use ratatui::crossterm::event::KeyEvent;
-use sakshi_core::{evaluate, Diff, Event, EventKind, Session, SessionState, TrustReport};
+use sakshi_core::{
+    evaluate, summarize, Diff, Event, EventKind, Session, SessionState, Summary, TrustReport,
+};
 use sakshi_git::Baseline;
 use sakshi_pty::{ExitInfo, PtyError, PtySession, TermSize};
+use time::OffsetDateTime;
 
 use crate::emulator::{TerminalEmulator, Vt100Emulator};
 use crate::keys;
@@ -79,6 +82,9 @@ pub(crate) struct Pane {
     pub diff: Option<Diff>,
     /// The current trust verdict.
     pub trust: TrustReport,
+    /// When the user last looked at this session; what happened after is
+    /// what they missed.
+    pub last_seen: OffsetDateTime,
     pub git: GitState,
     /// A diff is being computed.
     pub diff_in_flight: bool,
@@ -99,6 +105,7 @@ impl Pane {
             events: Vec::new(),
             diff: None,
             trust: TrustReport::clean(),
+            last_seen: OffsetDateTime::now_utc(),
             git: GitState::Pending,
             diff_in_flight: false,
             diff_pending: false,
@@ -192,6 +199,11 @@ impl Pane {
             self.trust = report;
             Some(&self.trust)
         }
+    }
+
+    /// What happened since the user last looked.
+    pub fn away_summary(&self) -> Summary {
+        summarize(&self.events, Some(self.last_seen))
     }
 
     /// Kill the child. Errors are ignored: it may already be gone.
