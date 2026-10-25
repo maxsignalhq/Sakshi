@@ -4,7 +4,7 @@
 //! {"v":1,"session_id":"...","type":"state","ts":"2026-01-01T00:00:00Z","data":{"state":"working"}}
 //! ```
 //!
-//! See `docs/PROTOCOL.md` for the full description.
+//! See `PROTOCOL.md` for the full description.
 
 use sakshi_core::{Event, EventKind, SessionId, SessionState};
 use serde_json::{json, Value};
