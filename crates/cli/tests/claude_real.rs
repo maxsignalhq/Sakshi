@@ -28,8 +28,10 @@ async fn run_claude(tag: &str, claude_args: &[&str], expect_on_screen: &str) -> 
     let mut tui = Tui::start(&args, &data.0);
 
     // The agent answers on its own terminal inside Sakshi...
+    // Case-insensitive: the model decides whether it writes "done" or "Done.".
+    let wanted = expect_on_screen.to_lowercase();
     tui.wait_for_within("claude's answer", Duration::from_secs(180), |s| {
-        s.contains(expect_on_screen)
+        s.to_lowercase().contains(&wanted)
     })
     .await;
     // ...and, being a one-shot `-p` run, exits.
