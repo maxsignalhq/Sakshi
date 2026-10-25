@@ -26,7 +26,7 @@ The [release workflow](../.github/workflows/release.yml):
 1. checks the tag matches the version in `Cargo.toml` (it refuses to publish if
    they differ);
 2. builds `--release --locked` for macOS (ARM and Intel), Linux (x86-64 and
-   ARM64) and Windows (x86-64) and runs `sakshi --version` on each build that
+   ARM64) and Windows (x86-64 and ARM64) and runs `sakshi --version` on each build that
    can run on its runner;
 3. packages `sakshi-vX.Y.Z-<target>.tar.gz` (a folder holding `sakshi`,
    `LICENSE`, `README.md`) or `.zip` on Windows (the same files, unfolded),

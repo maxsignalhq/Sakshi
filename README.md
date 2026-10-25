@@ -19,9 +19,25 @@ Running agents is easy. Knowing what they did is not. Sakshi watches each sessio
 
 ## Install
 
-Release archives for macOS (Apple Silicon and Intel), Linux (x86-64 and ARM64) and Windows (x86-64) are built by the [release workflow](.github/workflows/release.yml) and attached to each GitHub release, with a `SHA256SUMS` file. Unpack one and put `sakshi` on your `PATH`.
+**macOS and Linux:**
 
-From source, with a recent stable [Rust](https://rustup.rs):
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxsignalhq/Sakshi/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/maxsignalhq/Sakshi/main/install.ps1 | iex
+```
+
+Both scripts download the build for your machine from the latest GitHub release, check its SHA-256 against the published checksum, and install `sakshi` to `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\sakshi`, added to your user `PATH`). Read them first if you like; they are short. Set `SAKSHI_VERSION=v0.1.0` to pin a version or `SAKSHI_INSTALL_DIR` to choose the folder.
+
+**By hand:** release archives for macOS (Apple Silicon and Intel), Linux (x86-64 and ARM64, glibc) and Windows (x86-64 and ARM64) are attached to each [GitHub release](https://github.com/maxsignalhq/Sakshi/releases) with a `SHA256SUMS` file. Unpack one and put `sakshi` on your `PATH`.
+
+> **macOS note:** release binaries are not yet notarized by Apple. The install script is unaffected, but if you download an archive with a browser, macOS may refuse to open `sakshi`. Clear the download flag once with `xattr -d com.apple.quarantine ./sakshi`.
+
+**From source**, with a recent stable [Rust](https://rustup.rs):
 
 ```sh
 cargo install --git https://github.com/maxsignalhq/Sakshi sakshi
@@ -109,7 +125,7 @@ Set `SAKSHI_DATA_DIR` to put them elsewhere, or pass `--no-log` to record nothin
 - Sessions do not survive Sakshi exiting or its terminal closing; there is no background daemon.
 - Trust findings are pattern matches over commands, file paths and diffs. They will miss things and sometimes cry wolf. Treat a badge as a prompt to look.
 - Change tracking needs a git repository. Work you had uncommitted before a session started is not blamed on it.
-- Live state exists for Claude Code only. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose.
+- Live state exists for Claude Code only. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose, and [docs/ADAPTERS.md](docs/ADAPTERS.md) shows how to add one.
 
 ## Develop
 
@@ -120,7 +136,7 @@ cargo test
 python3 -m unittest discover -s packaging
 ```
 
-[SPEC.md](SPEC.md) describes the design and [CLAUDE.md](CLAUDE.md) the working rules. The workspace is `core` (model, events, trust engine; no UI or OS code), `pty`, `ipc`, `adapters`, `git`, `store`, `tui` and `cli`.
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), and please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). [SPEC.md](SPEC.md) describes the design and [CLAUDE.md](CLAUDE.md) the working rules. The workspace is `core` (model, events, trust engine; no UI or OS code), `pty`, `ipc`, `adapters`, `git`, `store`, `tui` and `cli`.
 
 ## License
 [MIT](LICENSE)

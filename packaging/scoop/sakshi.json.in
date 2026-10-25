@@ -7,6 +7,10 @@
         "64bit": {
             "url": "https://github.com/maxsignalhq/Sakshi/releases/download/v@@VERSION@@/sakshi-v@@VERSION@@-x86_64-pc-windows-msvc.zip",
             "hash": "@@SHA256_X86_64_PC_WINDOWS_MSVC@@"
+        },
+        "arm64": {
+            "url": "https://github.com/maxsignalhq/Sakshi/releases/download/v@@VERSION@@/sakshi-v@@VERSION@@-aarch64-pc-windows-msvc.zip",
+            "hash": "@@SHA256_AARCH64_PC_WINDOWS_MSVC@@"
         }
     },
     "bin": "sakshi.exe",
@@ -15,6 +19,9 @@
         "architecture": {
             "64bit": {
                 "url": "https://github.com/maxsignalhq/Sakshi/releases/download/v$version/sakshi-v$version-x86_64-pc-windows-msvc.zip"
+            },
+            "arm64": {
+                "url": "https://github.com/maxsignalhq/Sakshi/releases/download/v$version/sakshi-v$version-aarch64-pc-windows-msvc.zip"
             }
         }
     }

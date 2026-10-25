@@ -5,6 +5,8 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
+## [0.1.0] - 2026-10-24
+
 First usable version.
 
 ### Added
@@ -24,6 +26,10 @@ First usable version.
   gone silent.
 - An optional `config.toml` to mark your own sensitive paths or ignore some
   (`SAKSHI_CONFIG` overrides its location).
+- One-line installers for macOS/Linux (`install.sh`) and Windows
+  (`install.ps1`) that verify the release checksum, and Windows ARM64 builds.
+- Contributor docs: CONTRIBUTING, Code of Conduct, security policy, issue and
+  pull request templates, and a guide to writing adapters for other agents.
 - Change tracking against a snapshot taken when a session starts, so only the
   session's own changes count.
 - A "while you were away" summary when you re-attach, and a details panel (`t`).
