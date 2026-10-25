@@ -21,4 +21,8 @@ pub use session::{
     AgentKind, ParseSessionIdError, ParseStateError, Session, SessionId, SessionState,
 };
 pub use summary::{summarize, Summary};
-pub use trust::{evaluate, is_test_path, Badge, Finding, ParseTrustError, Severity, TrustReport};
+pub use trust::{
+    evaluate, evaluate_with, glob_match, hooks_silent, is_test_path, Badge, Finding, Observations,
+    ParseTrustError, PathRule, Severity, TrustConfig, TrustReport, HOOK_SILENCE_OUTPUT_BYTES,
+    HOOK_SILENCE_SECS,
+};

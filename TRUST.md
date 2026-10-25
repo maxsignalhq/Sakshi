@@ -38,13 +38,55 @@ them simply do not fire.
 | `trivial-assertion` | warn | A test gained an assertion that is always true, such as `assert!(true)` |
 | `sensitive-file` | alert | A secrets file was touched: `.env`, `*.pem`, `*.key`, `id_rsa`, `.npmrc`, `credentials*`, anything under `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, or git internals under `.git/` |
 | `sensitive-file` | warn | CI or automation config was touched: `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, `.husky/`, `CODEOWNERS`, ... |
+| `sensitive-file` | warn | Business-critical code was touched: a path with a word like `auth`, `login`, `oauth`, `jwt` (authentication), `payment`, `billing`, `invoice`, `ledger`, `checkout` (payments) or `migration`, `migrate`, `alembic`, `flyway` (database migrations). Whole words only, so `author.rs` is fine; test and doc files are left to the test rules |
+| `sensitive-file` | yours | A path matched a pattern in your [config](#your-own-rules) |
+| `coverage-lowered` | alert | A coverage threshold went down: `fail_under`, `--cov-fail-under`, `--fail-under-lines`, Jest/nyc/Vitest `coverageThreshold` numbers, codecov `target`, ... |
+| `checks-suppressed` | warn | Lines were added that silence a check instead of fixing it: `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `# noqa`, `# type: ignore`, `#[allow(`, `@SuppressWarnings`, `//nolint`, `istanbul ignore`, ... (doc files are skipped) |
+| `lockfile-changed` | info | A dependency lockfile changed: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, ... |
 | `destructive-command` | alert | `git push --force`, `git reset --hard`, `git clean -f`, `rm -rf` of `/`, `~`, `*`, `.` and similar, `DROP TABLE` / `DROP DATABASE`, `dd` onto a device, `mkfs` |
 | `destructive-command` | warn | Other `rm -rf`, `git push --force-with-lease`, `git checkout .`, `git restore .`, `git branch -D`, `chmod -R 777`, piping `curl`/`wget` into a shell, PowerShell `Remove-Item -Recurse -Force`, `rd /s` |
 | `tests-failing` | warn | The latest test run failed |
 | `unverified-changes` | info | Files changed and no test run came after the last edit |
+| `hooks-silent` | warn | Claude Code has printed plenty for a minute or more but its hooks have reported nothing, so live state and event-based findings may be missing. Clears as soon as a report arrives |
 
 Template env files (`.env.example`, `.env.sample`) and public keys (`*.pub`)
-are not flagged.
+are not flagged. Paths inside the session's working directory are matched
+relative to it, so a project folder named `payments-api` does not make every
+file in it "payments code".
+
+## Your own rules
+
+Sakshi reads an optional `config.toml`. Without one, the built-in rules apply
+unchanged.
+
+```toml
+[trust]
+# Extra paths to flag when an agent touches them.
+# severity is "info", "warn" (the default) or "alert".
+sensitive_paths = [
+  { pattern = "src/ledger/**", severity = "alert" },
+  { pattern = "**/kyc/**" },
+]
+# Paths never reported as sensitive, not even by the built-in rules.
+ignore_paths = ["fixtures/**", "src/auth/test_helpers.rs"]
+```
+
+Patterns are globs over `/`-separated paths, case-insensitive: `*` and `?`
+match within one folder, `**` across folders. A pattern that does not start
+with `/` can match at any depth, so `**/kyc/**` and `kyc/**` behave the same.
+`ignore_paths` only affects `sensitive-file` findings.
+
+The file lives at:
+
+| OS | Location |
+|----|----------|
+| Windows | `%APPDATA%\maxsignalhq\sakshi\config\config.toml` |
+| macOS | `~/Library/Application Support/dev.maxsignalhq.sakshi/config.toml` |
+| Linux | `~/.config/sakshi/config.toml` |
+
+or wherever `SAKSHI_CONFIG` points. A file with a typo or an unknown key stops
+Sakshi with an error instead of being ignored, so a mistake never quietly turns
+a rule off.
 
 ## Where the verdict shows up
 

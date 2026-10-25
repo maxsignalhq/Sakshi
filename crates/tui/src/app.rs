@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use sakshi_adapters::LaunchContext;
-use sakshi_core::{AgentKind, Diff, Event, EventBus, Session, SessionId};
+use sakshi_core::{AgentKind, Diff, Event, EventBus, Session, SessionId, TrustConfig};
 use sakshi_git::Baseline;
 use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
 use sakshi_pty::{OutputReceiver, PtyError, PtySession, SpawnConfig, TermSize};
@@ -50,6 +50,8 @@ pub struct RunConfig {
     pub notifications: bool,
     /// Where to keep activity logs; `None` turns logging off.
     pub data_dir: Option<PathBuf>,
+    /// The user's adjustments to the trust rules.
+    pub trust: TrustConfig,
 }
 
 /// Everything the event loop reacts to, funnelled into one channel.
@@ -82,6 +84,7 @@ struct Launcher {
     runtime: RuntimeDir,
     endpoint: Endpoint,
     events: mpsc::UnboundedSender<AppEvent>,
+    trust: Arc<TrustConfig>,
 }
 
 impl Launcher {
@@ -138,7 +141,7 @@ impl Launcher {
         self.forward_output(id, output);
         self.capture_baseline(id, cwd.clone());
         let session = Session::new(id, name, kind, cwd);
-        Ok(Pane::new(session, Box::new(pty), size))
+        Ok(Pane::new(session, Box::new(pty), size).with_trust_config(self.trust.clone()))
     }
 
     fn forward_output(&self, id: SessionId, mut output: OutputReceiver) {
@@ -193,6 +196,7 @@ async fn run_loop(
         runtime,
         endpoint,
         events: tx.clone(),
+        trust: Arc::new(config.trust.clone()),
     };
 
     // crossterm's reader blocks, so it gets its own thread. The thread ends
