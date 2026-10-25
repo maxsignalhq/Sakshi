@@ -15,3 +15,8 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
