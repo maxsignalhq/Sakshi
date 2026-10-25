@@ -1,0 +1,16 @@
+﻿[package]
+name = "sakshi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The witness for your AI coding agents"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.5.61", features = ["derive"] }
+sakshi-tui = { path = "../tui" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
