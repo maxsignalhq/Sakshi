@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "sakshi"
 version.workspace = true
 edition.workspace = true
@@ -9,10 +9,10 @@ description = "The witness for your AI coding agents"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.5.61", features = ["derive"] }
-directories = "6"
 sakshi-adapters = { path = "../adapters" }
 sakshi-core = { path = "../core" }
 sakshi-ipc = { path = "../ipc" }
+sakshi-store = { path = "../store" }
 sakshi-tui = { path = "../tui" }
 serde_json = "1"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }

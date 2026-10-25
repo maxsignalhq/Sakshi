@@ -28,6 +28,10 @@ struct Cli {
     #[arg(long)]
     no_notify: bool,
 
+    /// Do not write activity logs.
+    #[arg(long)]
+    no_log: bool,
+
     /// Program to run, with its arguments. Defaults to your shell.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -54,7 +58,12 @@ fn default_shell() -> String {
 }
 
 /// Turn the command line into what the TUI should run.
-fn run_config(command: Vec<String>, cwd: PathBuf, notifications: bool) -> RunConfig {
+fn run_config(
+    command: Vec<String>,
+    cwd: PathBuf,
+    notifications: bool,
+    data_dir: Option<PathBuf>,
+) -> RunConfig {
     let mut parts = command.into_iter();
     let program = parts.next().unwrap_or_else(default_shell);
     let name = Path::new(&program)
@@ -68,6 +77,7 @@ fn run_config(command: Vec<String>, cwd: PathBuf, notifications: bool) -> RunCon
         cwd,
         shell: default_shell(),
         notifications,
+        data_dir,
     }
 }
 
@@ -85,7 +95,12 @@ async fn main() -> Result<()> {
     }
     logging::init();
     let cwd = std::env::current_dir().context("cannot determine the current directory")?;
-    sakshi_tui::run(run_config(cli.command, cwd, !cli.no_notify))
+    let data_dir = if cli.no_log {
+        None
+    } else {
+        sakshi_store::data_dir()
+    };
+    sakshi_tui::run(run_config(cli.command, cwd, !cli.no_notify, data_dir))
         .await
         .context("sakshi exited with an error")
 }
@@ -100,6 +115,7 @@ mod tests {
             vec!["/usr/bin/claude".into(), "--resume".into()],
             PathBuf::from("."),
             true,
+            None,
         );
         assert_eq!(cfg.program, "/usr/bin/claude");
         assert_eq!(cfg.args, vec!["--resume".to_string()]);
@@ -108,7 +124,7 @@ mod tests {
 
     #[test]
     fn empty_command_falls_back_to_shell() {
-        let cfg = run_config(Vec::new(), PathBuf::from("."), false);
+        let cfg = run_config(Vec::new(), PathBuf::from("."), false, None);
         assert_eq!(cfg.program, default_shell());
         assert_eq!(cfg.shell, default_shell());
         assert!(cfg.args.is_empty());

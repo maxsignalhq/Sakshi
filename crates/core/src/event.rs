@@ -1,6 +1,7 @@
 use time::OffsetDateTime;
 
 use crate::session::{SessionId, SessionState};
+use crate::trust::{Badge, Finding};
 
 /// What happened in a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,22 @@ pub enum EventKind {
         /// The text.
         text: String,
     },
+    /// Recorded by Sakshi when a session starts, so a log describes itself.
+    Session {
+        /// Display name of the session.
+        name: String,
+        /// Which agent it runs, e.g. `claude` or `generic`.
+        agent: String,
+        /// Working directory it started in.
+        cwd: String,
+    },
+    /// Recorded by Sakshi whenever a session's trust verdict changes.
+    Trust {
+        /// The overall verdict.
+        badge: Badge,
+        /// The findings behind it, worst first.
+        findings: Vec<Finding>,
+    },
 }
 
 impl EventKind {
@@ -48,6 +65,8 @@ impl EventKind {
             EventKind::Command { .. } => "command",
             EventKind::TestRun { .. } => "test_run",
             EventKind::Message { .. } => "message",
+            EventKind::Session { .. } => "session",
+            EventKind::Trust { .. } => "trust",
         }
     }
 }
@@ -71,6 +90,45 @@ impl Event {
             ts: OffsetDateTime::now_utc(),
             kind,
         }
+    }
+}
+
+impl Event {
+    /// A short, one-line description for activity feeds and replays.
+    /// Events that are bookkeeping rather than activity return `None`.
+    pub fn describe(&self) -> Option<String> {
+        let text = match &self.kind {
+            EventKind::State(state) => format!("state: {state}"),
+            EventKind::ToolUse { tool, summary } => match summary {
+                Some(summary) => format!("{tool} {summary}"),
+                None => tool.clone(),
+            },
+            EventKind::FileEdit { path } => format!("edit {path}"),
+            EventKind::Command { command } => format!("$ {command}"),
+            EventKind::TestRun { command, passed } => {
+                let outcome = match passed {
+                    Some(true) => "passed",
+                    Some(false) => "FAILED",
+                    None => "ran",
+                };
+                format!("tests {outcome}: {command}")
+            }
+            EventKind::Message { text } => text.clone(),
+            EventKind::Session { .. } | EventKind::Trust { .. } => return None,
+        };
+        // Keep feeds to one line.
+        Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
+}
+
+/// `5s`, `3m`, `2h` or `4d` for an age in seconds.
+pub fn format_age(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
     }
 }
 
@@ -144,6 +202,57 @@ mod tests {
             passed: None,
         };
         assert_eq!(k.type_name(), "test_run");
+    }
+
+    #[test]
+    fn describes_activity_on_one_line() {
+        let d = |kind| Event::now(SessionId(1), kind).describe();
+        assert_eq!(
+            d(EventKind::ToolUse {
+                tool: "Edit".into(),
+                summary: Some("a.rs".into())
+            }),
+            Some("Edit a.rs".into())
+        );
+        assert_eq!(
+            d(EventKind::Command {
+                command: "ls
+  -la"
+                .into()
+            }),
+            Some("$ ls -la".into())
+        );
+        assert_eq!(
+            d(EventKind::TestRun {
+                command: "cargo test".into(),
+                passed: Some(false)
+            }),
+            Some("tests FAILED: cargo test".into())
+        );
+        assert_eq!(
+            d(EventKind::State(SessionState::Waiting)),
+            Some("state: waiting".into())
+        );
+    }
+
+    #[test]
+    fn bookkeeping_events_have_no_description() {
+        let session = EventKind::Session {
+            name: "n".into(),
+            agent: "a".into(),
+            cwd: "c".into(),
+        };
+        assert_eq!(Event::now(SessionId(1), session).describe(), None);
+    }
+
+    #[test]
+    fn ages_pick_a_sensible_unit() {
+        assert_eq!(format_age(-5), "0s");
+        assert_eq!(format_age(59), "59s");
+        assert_eq!(format_age(60), "1m");
+        assert_eq!(format_age(3599), "59m");
+        assert_eq!(format_age(7200), "2h");
+        assert_eq!(format_age(200_000), "2d");
     }
 
     #[test]

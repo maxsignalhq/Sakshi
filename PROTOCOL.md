@@ -49,10 +49,23 @@ Unknown extra fields are ignored, so newer senders stay compatible.
 | `command` | `{"command": string}` |
 | `test_run` | `{"command": string, "passed": boolean?}` (`passed` omitted or `null` when unknown) |
 | `message` | `{"text": string}` |
+| `session` | `{"name": string, "agent": string, "cwd": string}` |
+| `trust` | `{"badge": "green" \| "yellow" \| "red", "findings": [{"rule": string, "severity": "info" \| "warn" \| "alert", "reason": string}]}` |
+
+`session` and `trust` are recorded by Sakshi itself, at the start of a session
+and whenever its trust verdict changes (see TRUST.md). They appear in activity
+logs; agents and hooks have no reason to send them.
 
 States: `idle` started and not yet doing anything; `working` actively working;
 `waiting` needs the user (a question, a permission prompt, or a finished turn);
 `done` and `error` the session has ended. Ended sessions stay ended.
+
+## Activity logs
+
+Sakshi appends every event of a session, in this format, to
+`sessions/<start time>-<session id>.jsonl` in its data directory. A log is
+therefore a valid stream of protocol messages. Readers skip lines they cannot
+parse, so logs written by a newer Sakshi still load.
 
 ## Errors
 
