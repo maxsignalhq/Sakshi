@@ -20,7 +20,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 
 [dev-dependencies]
+sakshi-pty = { path = "../pty" }
 tokio = { version = "1.53.3", features = ["rt", "macros", "time"] }
+vt100 = "0.18"
 
 [lints]
 workspace = true

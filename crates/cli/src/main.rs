@@ -24,6 +24,10 @@ struct Cli {
     #[command(subcommand)]
     subcommand: Option<Sub>,
 
+    /// Do not show desktop notifications.
+    #[arg(long)]
+    no_notify: bool,
+
     /// Program to run, with its arguments. Defaults to your shell.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -50,7 +54,7 @@ fn default_shell() -> String {
 }
 
 /// Turn the command line into what the TUI should run.
-fn run_config(command: Vec<String>, cwd: PathBuf) -> RunConfig {
+fn run_config(command: Vec<String>, cwd: PathBuf, notifications: bool) -> RunConfig {
     let mut parts = command.into_iter();
     let program = parts.next().unwrap_or_else(default_shell);
     let name = Path::new(&program)
@@ -62,6 +66,8 @@ fn run_config(command: Vec<String>, cwd: PathBuf) -> RunConfig {
         program,
         args: parts.collect(),
         cwd,
+        shell: default_shell(),
+        notifications,
     }
 }
 
@@ -79,7 +85,7 @@ async fn main() -> Result<()> {
     }
     logging::init();
     let cwd = std::env::current_dir().context("cannot determine the current directory")?;
-    sakshi_tui::run(run_config(cli.command, cwd))
+    sakshi_tui::run(run_config(cli.command, cwd, !cli.no_notify))
         .await
         .context("sakshi exited with an error")
 }
@@ -93,6 +99,7 @@ mod tests {
         let cfg = run_config(
             vec!["/usr/bin/claude".into(), "--resume".into()],
             PathBuf::from("."),
+            true,
         );
         assert_eq!(cfg.program, "/usr/bin/claude");
         assert_eq!(cfg.args, vec!["--resume".to_string()]);
@@ -101,9 +108,21 @@ mod tests {
 
     #[test]
     fn empty_command_falls_back_to_shell() {
-        let cfg = run_config(Vec::new(), PathBuf::from("."));
+        let cfg = run_config(Vec::new(), PathBuf::from("."), false);
         assert_eq!(cfg.program, default_shell());
+        assert_eq!(cfg.shell, default_shell());
         assert!(cfg.args.is_empty());
+        assert!(!cfg.notifications);
+    }
+
+    #[test]
+    fn no_notify_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["sakshi", "--no-notify"]).unwrap();
+        assert!(cli.no_notify);
+        let cli = Cli::try_parse_from(["sakshi", "claude", "--no-notify"]).unwrap();
+        // After the program name, flags belong to the program.
+        assert!(!cli.no_notify);
+        assert_eq!(cli.command, ["claude", "--no-notify"]);
     }
 
     #[test]
