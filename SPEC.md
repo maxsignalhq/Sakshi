@@ -20,19 +20,22 @@ Sakshi (साक्षी, "the witness") is an open-source, cross-platform coc
 ## Workspace layout
 ```
 crates/
-  core/      session model, event bus, trust engine (no UI, no OS code)
+  core/      session model, event bus, trust engine, summaries (no UI, no OS code)
   pty/       PTY spawn, resize, I/O
   ipc/       transports + protocol types
   adapters/  agent adapters (claude first)
+  git/       repository baseline snapshots and diffs
+  store/     activity logs, data and config locations
   tui/       ratatui app
-  cli/       binary entry point + subcommands (binary name: sakshi)
+  cli/       binary entry point, subcommands, config loading (binary name: sakshi)
 ```
 
 ## Concepts
 - **Session:** id, agent kind, working dir, state (idle | working | waiting | done | error), started_at.
 - **Event:** typed, timestamped (state, tool_use, file_edit, command, test_run, message).
 - **Adapter:** trait per agent; capability-probed at runtime; unavailable agents hidden.
-- **Trust engine:** pure functions over events + git diff → findings with severity and reason → badge (green | yellow | red).
+- **Trust engine:** pure functions over events + git diff + observations (hooks expected, terminal output, working dir) → findings with severity and reason → badge (green | yellow | red). Rules are listed in TRUST.md.
+- **Config:** optional `config.toml` (`[trust] sensitive_paths`, `ignore_paths`). Missing file = defaults; invalid file = clear error.
 - **Activity log:** append-only JSONL per session in the app data dir.
 
 ## IPC protocol (v1)

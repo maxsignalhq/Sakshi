@@ -2,6 +2,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod config;
 mod history;
 mod hook;
 mod logging;
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use sakshi_core::TrustConfig;
 use sakshi_tui::RunConfig;
 
 /// The witness for your AI coding agents.
@@ -94,6 +96,7 @@ fn run_config(
     cwd: PathBuf,
     notifications: bool,
     data_dir: Option<PathBuf>,
+    trust: TrustConfig,
 ) -> RunConfig {
     let mut parts = command.into_iter();
     let program = parts.next().unwrap_or_else(default_shell);
@@ -109,6 +112,7 @@ fn run_config(
         shell: default_shell(),
         notifications,
         data_dir,
+        trust,
     }
 }
 
@@ -147,6 +151,8 @@ async fn main() -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!("sakshi needs an interactive terminal");
     }
+    // Read the config before taking over the terminal so errors print plainly.
+    let trust = config::load(sakshi_store::config_path().as_deref())?;
     logging::init();
     let cwd = std::env::current_dir().context("cannot determine the current directory")?;
     let data_dir = if cli.no_log {
@@ -154,9 +160,15 @@ async fn main() -> Result<()> {
     } else {
         sakshi_store::data_dir()
     };
-    sakshi_tui::run(run_config(cli.command, cwd, !cli.no_notify, data_dir))
-        .await
-        .context("sakshi exited with an error")
+    sakshi_tui::run(run_config(
+        cli.command,
+        cwd,
+        !cli.no_notify,
+        data_dir,
+        trust,
+    ))
+    .await
+    .context("sakshi exited with an error")
 }
 
 #[cfg(test)]
@@ -170,6 +182,7 @@ mod tests {
             PathBuf::from("."),
             true,
             None,
+            TrustConfig::default(),
         );
         assert_eq!(cfg.program, "/usr/bin/claude");
         assert_eq!(cfg.args, vec!["--resume".to_string()]);
@@ -178,7 +191,13 @@ mod tests {
 
     #[test]
     fn empty_command_falls_back_to_shell() {
-        let cfg = run_config(Vec::new(), PathBuf::from("."), false, None);
+        let cfg = run_config(
+            Vec::new(),
+            PathBuf::from("."),
+            false,
+            None,
+            TrustConfig::default(),
+        );
         assert_eq!(cfg.program, default_shell());
         assert_eq!(cfg.shell, default_shell());
         assert!(cfg.args.is_empty());

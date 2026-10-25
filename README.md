@@ -76,9 +76,21 @@ sakshi report 0123abcd --format json # a specific session (any unique prefix of 
 sakshi replay --speed 10             # replay the timeline at 10x
 ```
 
+### Your own rules
+
+Flag paths that matter in your codebase, or quiet ones that don't, with an optional `config.toml`:
+
+```toml
+[trust]
+sensitive_paths = [{ pattern = "src/ledger/**", severity = "alert" }]
+ignore_paths = ["fixtures/**"]
+```
+
+[TRUST.md](TRUST.md#your-own-rules) has the details and where the file lives on each OS.
+
 ## Claude Code
 
-When Sakshi starts `claude`, it adds `--settings <file>` with hooks that report back to Sakshi. Your own Claude Code settings are never modified, and if Sakshi is not running the hooks do nothing and cannot slow the agent down. The details are in [PROTOCOL.md](PROTOCOL.md).
+When Sakshi starts `claude`, it adds `--settings <file>` with hooks that report back to Sakshi. Your own Claude Code settings are never modified, and if Sakshi is not running the hooks do nothing and cannot slow the agent down. If the hooks ever go quiet while Claude Code is clearly busy, the session turns yellow with a `hooks-silent` finding, so you know the badge can't see everything. The details are in [PROTOCOL.md](PROTOCOL.md).
 
 ## Privacy
 

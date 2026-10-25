@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use ratatui::crossterm::event::KeyEvent;
 use sakshi_core::{
-    evaluate, summarize, Diff, Event, EventKind, Session, SessionState, Summary, TrustReport,
+    evaluate_with, hooks_silent, summarize, AgentKind, Diff, Event, EventKind, Observations,
+    Session, SessionState, Summary, TrustConfig, TrustReport,
 };
 use sakshi_git::Baseline;
 use sakshi_pty::{ExitInfo, PtyError, PtySession, TermSize};
@@ -92,6 +93,12 @@ pub(crate) struct Pane {
     pub diff_pending: bool,
     /// Events or the diff changed since the verdict was computed.
     trust_stale: bool,
+    /// The user's adjustments to the trust rules.
+    trust_config: Arc<TrustConfig>,
+    /// Bytes the child has printed, for spotting hooks that never report.
+    output_bytes: u64,
+    /// Whether the last verdict included silent hooks.
+    hooks_were_silent: bool,
     pty: Box<dyn Pty>,
     emulator: Box<dyn TerminalEmulator>,
 }
@@ -110,9 +117,18 @@ impl Pane {
             diff_in_flight: false,
             diff_pending: false,
             trust_stale: false,
+            trust_config: Arc::new(TrustConfig::default()),
+            output_bytes: 0,
+            hooks_were_silent: false,
             pty,
             emulator: Box::new(Vt100Emulator::new(size)),
         }
+    }
+
+    /// Use the user's trust configuration instead of the defaults.
+    pub fn with_trust_config(mut self, config: Arc<TrustConfig>) -> Self {
+        self.trust_config = config;
+        self
     }
 
     pub fn emulator(&self) -> &dyn TerminalEmulator {
@@ -121,6 +137,7 @@ impl Pane {
 
     /// Feed child output to the emulator and send back any answers it owes.
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.output_bytes = self.output_bytes.saturating_add(bytes.len() as u64);
         self.emulator.process(bytes);
         let replies = self.emulator.take_replies();
         if !replies.is_empty() {
@@ -188,16 +205,40 @@ impl Pane {
     /// Recompute the trust verdict if anything changed since the last time.
     /// Returns the new report only when it differs from the old one.
     pub fn refresh_trust(&mut self) -> Option<&TrustReport> {
+        let observed = self.observations();
+        // Silence depends on time and output, not just on new events.
+        let silent = hooks_silent(&self.events, &observed);
+        if silent != self.hooks_were_silent {
+            self.hooks_were_silent = silent;
+            self.trust_stale = true;
+        }
         if !self.trust_stale {
             return None;
         }
         self.trust_stale = false;
-        let report = evaluate(&self.events, self.diff.as_ref());
+        let report = evaluate_with(
+            &self.events,
+            self.diff.as_ref(),
+            &self.trust_config,
+            &observed,
+        );
         if report == self.trust {
             None
         } else {
             self.trust = report;
             Some(&self.trust)
+        }
+    }
+
+    /// What Sakshi has seen of the session beyond its events.
+    fn observations(&self) -> Observations {
+        let running_secs = self.session.started_at.elapsed().map_or(0, |d| d.as_secs());
+        Observations {
+            // Once the process has ended there is nothing left to report.
+            hooks_expected: self.session.kind == AgentKind::Claude && self.exit.is_none(),
+            output_bytes: self.output_bytes,
+            running_secs,
+            root: Some(self.session.working_dir.display().to_string()),
         }
     }
 

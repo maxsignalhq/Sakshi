@@ -27,6 +27,18 @@ pub fn data_dir() -> Option<PathBuf> {
     ProjectDirs::from("dev", "maxsignalhq", "sakshi").map(|d| d.data_local_dir().to_path_buf())
 }
 
+/// Environment variable that points at a specific config file.
+pub const CONFIG_ENV: &str = "SAKSHI_CONFIG";
+
+/// Where Sakshi looks for its optional `config.toml`, or `None` if the
+/// platform has no home directory. `SAKSHI_CONFIG` overrides it.
+pub fn config_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(CONFIG_ENV).filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    ProjectDirs::from("dev", "maxsignalhq", "sakshi").map(|d| d.config_dir().join("config.toml"))
+}
+
 /// Where session logs live inside a data directory.
 pub fn sessions_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("sessions")

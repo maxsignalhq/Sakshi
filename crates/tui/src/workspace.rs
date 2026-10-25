@@ -1193,4 +1193,28 @@ pub(crate) mod tests {
         assert!(matches!(f.ws.panes[0].git, GitState::NotARepo));
         assert!(matches!(f.ws.panes[1].git, GitState::Ready(_)));
     }
+
+    #[test]
+    fn silent_claude_hooks_turn_the_badge_yellow_until_a_report_arrives() {
+        let mut f = fixture(&[]);
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut session = Session::new(
+            SessionId(9),
+            "claude",
+            AgentKind::Claude,
+            PathBuf::from("."),
+        );
+        session.started_at = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        let size = layout::pty_size(SCREEN, false);
+        f.ws.add_pane(Pane::new(session, Box::new(FakePty(state)), size), false);
+
+        f.ws.handle_output(SessionId(9), &[b'x'; 5000]);
+        f.ws.tick();
+        assert_eq!(f.ws.panes[0].trust.badge, Badge::Yellow);
+        assert_eq!(f.ws.panes[0].trust.findings[0].rule, "hooks-silent");
+
+        f.ws.handle_event(&state_event(9, SessionState::Working));
+        f.ws.tick();
+        assert_eq!(f.ws.panes[0].trust.badge, Badge::Green);
+    }
 }

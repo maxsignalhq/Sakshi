@@ -18,6 +18,12 @@ First usable version.
 - A trust engine with a green/yellow/red badge per session and plain-English
   reasons: deleted or skipped tests, weakened assertions, secrets and CI files
   touched, destructive commands, failing or missing test runs. See TRUST.md.
+- Trust rules for business-critical code (authentication, payments, database
+  migrations), lowered coverage thresholds, added lint/type/coverage
+  suppressions, changed dependency lockfiles, and Claude Code hooks that have
+  gone silent.
+- An optional `config.toml` to mark your own sensitive paths or ignore some
+  (`SAKSHI_CONFIG` overrides its location).
 - Change tracking against a snapshot taken when a session starts, so only the
   session's own changes count.
 - A "while you were away" summary when you re-attach, and a details panel (`t`).
