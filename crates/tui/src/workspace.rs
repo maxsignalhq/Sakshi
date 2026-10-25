@@ -9,8 +9,11 @@ use std::sync::Arc;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use sakshi_core::{Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState};
+use sakshi_core::{
+    format_age, Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState, Severity,
+};
 use sakshi_pty::TermSize;
+use time::OffsetDateTime;
 
 use crate::layout;
 use crate::notify::Notifier;
@@ -18,6 +21,17 @@ use crate::pane::{DiffSource, GitState, Pane};
 
 /// Ticks (100 ms each) between diff refreshes of a working session.
 const DIFF_REFRESH_TICKS: u64 = 100;
+
+/// Shortest absence that earns a "while you were away" summary. Quick
+/// switches between sessions should stay quiet.
+const AWAY_MIN_SECONDS: i64 = 3;
+
+/// A message laid over the terminal until a key is pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Overlay {
+    pub title: String,
+    pub lines: Vec<String>,
+}
 
 /// Where keyboard input goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +84,8 @@ pub(crate) struct Workspace {
     pub confirm: Option<Confirm>,
     /// One-off message for the footer, cleared by the next key press.
     pub notice: Option<String>,
+    /// "While you were away" summary shown on re-attach.
+    pub overlay: Option<Overlay>,
     pub agents: Vec<AgentInfo>,
     /// Whether the details panel is switched on.
     pub show_panel: bool,
@@ -101,6 +117,7 @@ impl Workspace {
             focus: Focus::List,
             confirm: None,
             notice: None,
+            overlay: None,
             agents,
             show_panel: false,
             screen,
@@ -156,6 +173,10 @@ impl Workspace {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         self.notice = None;
+        // Any key dismisses the summary; it is not passed on to the session.
+        if self.overlay.take().is_some() {
+            return Outcome::Continue;
+        }
         match self.focus {
             Focus::Terminal => self.handle_terminal_key(key),
             Focus::List => self.handle_list_key(key),
@@ -170,6 +191,8 @@ impl Workspace {
         // After the process ended there is nothing to type into.
         if is_detach_chord(key) || pane.exit.is_some() {
             self.focus = Focus::List;
+            // Everything up to now has been seen.
+            pane.last_seen = OffsetDateTime::now_utc();
             // Whatever the user just did in there is worth a look.
             let id = pane.session.id;
             self.request_diff(id);
@@ -220,9 +243,36 @@ impl Workspace {
     }
 
     fn attach(&mut self) {
-        if !self.panes.is_empty() {
-            self.focus = Focus::Terminal;
+        let Some(pane) = self.panes.get(self.selected) else {
+            return;
+        };
+        self.focus = Focus::Terminal;
+        let away = (OffsetDateTime::now_utc() - pane.last_seen).whole_seconds();
+        let summary = pane.away_summary();
+        if away < AWAY_MIN_SECONDS || summary.is_quiet() {
+            return;
         }
+        let mut lines = summary.lines();
+        let worst = pane
+            .trust
+            .findings
+            .first()
+            .filter(|f| f.severity != Severity::Info);
+        if let Some(finding) = worst {
+            lines.push(format!(
+                "Trust: {} - {}",
+                pane.trust.badge.as_str().to_uppercase(),
+                finding.reason
+            ));
+        }
+        self.overlay = Some(Overlay {
+            title: format!(
+                "{} - while you were away ({})",
+                pane.session.name,
+                format_age(away)
+            ),
+            lines,
+        });
     }
 
     fn close_selected(&mut self, pending: Option<Confirm>) {
@@ -451,7 +501,7 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     use ratatui::crossterm::event::KeyEventKind;
-    use sakshi_core::{AgentKind, ChangeKind, FileChange, Session, Severity};
+    use sakshi_core::{AgentKind, ChangeKind, FileChange, Session};
     use sakshi_pty::{ExitInfo, PtyError};
     use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -834,6 +884,108 @@ pub(crate) mod tests {
         ws.notice = Some("oops".into());
         ws.handle_key(press(KeyCode::Char('j')));
         assert_eq!(ws.notice, None);
+    }
+
+    // ---- while you were away
+
+    fn event_at(id: u64, secs_ago: i64, kind: EventKind) -> Event {
+        Event {
+            session_id: SessionId(id),
+            ts: OffsetDateTime::now_utc() - time::Duration::seconds(secs_ago),
+            kind,
+        }
+    }
+
+    fn edit_at(id: u64, secs_ago: i64, path: &str) -> Event {
+        event_at(id, secs_ago, EventKind::FileEdit { path: path.into() })
+    }
+
+    /// A workspace whose only session was last looked at a minute ago.
+    fn away_fixture() -> Fixture {
+        let mut f = fixture(&["a"]);
+        f.ws.panes[0].last_seen = OffsetDateTime::now_utc() - time::Duration::seconds(60);
+        f
+    }
+
+    #[test]
+    fn reattaching_after_activity_shows_what_happened() {
+        let mut f = away_fixture();
+        f.ws.handle_event(&edit_at(1, 30, "src/a.rs"));
+        f.ws.handle_key(press(KeyCode::Enter));
+        let overlay = f.ws.overlay.clone().unwrap();
+        assert!(overlay.title.contains("while you were away"), "{overlay:?}");
+        assert!(
+            overlay
+                .lines
+                .iter()
+                .any(|l| l.contains("Edited 1 file(s): src/a.rs")),
+            "{overlay:?}"
+        );
+        assert_eq!(f.ws.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn a_quiet_absence_shows_nothing() {
+        let mut f = away_fixture();
+        f.ws.handle_key(press(KeyCode::Enter));
+        assert_eq!(f.ws.overlay, None);
+    }
+
+    #[test]
+    fn a_very_short_absence_shows_nothing() {
+        let mut f = fixture(&["a"]); // last seen just now
+        f.ws.handle_event(&edit_at(1, 0, "a.rs"));
+        f.ws.handle_key(press(KeyCode::Enter));
+        assert_eq!(f.ws.overlay, None);
+    }
+
+    #[test]
+    fn activity_before_the_last_look_is_not_repeated() {
+        let mut f = away_fixture();
+        f.ws.handle_event(&edit_at(1, 120, "old.rs")); // before last_seen
+        f.ws.handle_key(press(KeyCode::Enter));
+        assert_eq!(f.ws.overlay, None);
+    }
+
+    #[test]
+    fn any_key_dismisses_the_summary_without_reaching_the_session() {
+        let mut f = away_fixture();
+        f.ws.handle_event(&edit_at(1, 30, "a.rs"));
+        f.ws.handle_key(press(KeyCode::Enter));
+        assert!(f.ws.overlay.is_some());
+        f.ws.handle_key(press(KeyCode::Char('z')));
+        assert_eq!(f.ws.overlay, None);
+        assert!(f.states[0].lock().unwrap().written.is_empty());
+        // The next key is typed into the session as usual.
+        f.ws.handle_key(press(KeyCode::Char('z')));
+        assert_eq!(f.states[0].lock().unwrap().written, b"z");
+    }
+
+    #[test]
+    fn detaching_marks_everything_as_seen() {
+        let mut f = away_fixture();
+        f.ws.handle_key(press(KeyCode::Enter));
+        f.ws.handle_event(&edit_at(1, 0, "a.rs")); // happens while attached
+        f.ws.handle_key(ctrl(']'));
+        assert!(f.ws.panes[0].away_summary().is_quiet());
+        f.ws.handle_key(press(KeyCode::Enter));
+        assert_eq!(f.ws.overlay, None);
+    }
+
+    #[test]
+    fn the_summary_mentions_a_trust_problem() {
+        let mut f = away_fixture();
+        let command = EventKind::Command {
+            command: "git reset --hard".into(),
+        };
+        f.ws.handle_event(&event_at(1, 30, command));
+        f.ws.tick();
+        f.ws.handle_key(press(KeyCode::Enter));
+        let overlay = f.ws.overlay.clone().unwrap();
+        assert!(
+            overlay.lines.iter().any(|l| l.starts_with("Trust: RED")),
+            "{overlay:?}"
+        );
     }
 
     // ---- panel

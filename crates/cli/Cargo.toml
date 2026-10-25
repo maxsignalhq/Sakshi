@@ -15,11 +15,13 @@ sakshi-ipc = { path = "../ipc" }
 sakshi-store = { path = "../store" }
 sakshi-tui = { path = "../tui" }
 serde_json = "1"
+time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 
 [dev-dependencies]
+time = "0.3"
 sakshi-pty = { path = "../pty" }
 tokio = { version = "1.53.3", features = ["rt", "macros", "time"] }
 vt100 = "0.18"
