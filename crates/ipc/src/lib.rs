@@ -26,8 +26,8 @@ mod roundtrip_tests {
     use super::*;
 
     fn temp_endpoint(tag: &str) -> (RuntimeDir, Endpoint) {
-        let name = format!("sakshi-test-{}-{tag}", std::process::id());
-        let dir = RuntimeDir::create_in(&std::env::temp_dir(), &name).unwrap();
+        let dir = RuntimeDir::create_unique(&std::env::temp_dir(), &format!("sakshi-test-{tag}"))
+            .unwrap();
         let endpoint = dir.endpoint();
         (dir, endpoint)
     }

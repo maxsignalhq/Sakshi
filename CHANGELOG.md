@@ -40,6 +40,28 @@ First usable version.
 - macOS, Linux and Windows support, with CI on all three.
 - Release workflow and Homebrew, Scoop and winget manifest templates.
 
+### Fixed before release
+- Security: the per-process runtime directory is now created atomically under
+  an unpredictable name and refuses to adopt an existing path. Before, on a
+  shared Linux machine with no `XDG_RUNTIME_DIR`, another user could plant
+  `/tmp/sakshi-<pid>` first and swap the hook settings or the socket.
+- Activity logs and `sakshi.log` are created readable by the user only on Unix,
+  and obvious secrets in commands are masked before they reach the disk.
+- Pasting several lines no longer submits each line as it arrives: terminals
+  that report pastes get the text marked as a paste (bracketed paste), and on
+  Windows a burst of typed characters with a line break is treated as one.
+- Ctrl, Shift and Alt with arrows, Home, End, PageUp/PageDown, Insert, Delete
+  and function keys now reach the program (Ctrl+Left jumps a word).
+- Scrollback: Shift+PgUp/PgDn while attached, PgUp/PgDn on the list.
+- Trust: commands are split like a shell would, so quoted text is no longer
+  mistaken for a command, and `bash -c`, `cmd /c`, `powershell -Command`,
+  `sudo`, `env`, `nohup` and `xargs` no longer hide a destructive command.
+- Killing a session kills the programs it started too.
+- Tested against a real Claude Code: its hooks drive the session state and the
+  commands it runs are recorded (`cargo test -p sakshi --test claude_real --
+  --ignored`).
+
 ### Known limits
 - Sessions end when Sakshi exits; there is no background daemon.
 - Live state exists for Claude Code only.
+- Agents inside WSL cannot report to a Windows-hosted Sakshi; run Sakshi inside WSL.

@@ -10,8 +10,7 @@ use sakshi_core::{EventKind, SessionId, SessionState};
 use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
 
 fn temp_runtime(tag: &str) -> RuntimeDir {
-    let name = format!("sakshi-hooktest-{}-{tag}", std::process::id());
-    RuntimeDir::create_in(&std::env::temp_dir(), &name).unwrap()
+    RuntimeDir::create_unique(&std::env::temp_dir(), &format!("sakshi-hooktest-{tag}")).unwrap()
 }
 
 /// Run `sakshi hook claude` with `stdin` and the given Sakshi environment.

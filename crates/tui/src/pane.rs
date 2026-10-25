@@ -148,10 +148,44 @@ impl Pane {
 
     /// Send a key press to the child.
     pub fn send_key(&mut self, key: KeyEvent) {
+        self.snap_to_bottom();
         if let Some(bytes) = keys::encode_key(key, self.emulator.application_cursor()) {
             // A failed write means the child is gone; `poll_exit` reports that.
             let _ = self.pty.write(&bytes);
         }
+    }
+
+    /// Paste text into the child, wrapped the way it asked for.
+    pub fn paste(&mut self, text: &str) {
+        let bytes = keys::paste_bytes(text, self.emulator.bracketed_paste());
+        // A failed write means the child is gone; `poll_exit` reports that.
+        let _ = self.pty.write(&bytes);
+        self.snap_to_bottom();
+    }
+
+    /// Rows the view is scrolled back from the live screen.
+    pub fn scrolled(&self) -> usize {
+        self.emulator.scrollback()
+    }
+
+    /// Scroll the view by `rows` (positive is back into history).
+    pub fn scroll(&mut self, rows: isize) {
+        let now = self.emulator.scrollback();
+        self.emulator
+            .set_scrollback(now.saturating_add_signed(rows));
+    }
+
+    /// Return to the live screen.
+    pub fn snap_to_bottom(&mut self) {
+        if self.emulator.scrollback() > 0 {
+            self.emulator.set_scrollback(0);
+        }
+    }
+
+    /// How many rows a "page" of scrolling is.
+    pub fn page_rows(&self) -> isize {
+        let rows = isize::try_from(self.emulator.size().rows).unwrap_or(isize::MAX);
+        (rows - 1).max(1)
     }
 
     pub fn resize(&mut self, size: TermSize) {

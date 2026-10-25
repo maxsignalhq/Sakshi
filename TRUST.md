@@ -96,6 +96,17 @@ a rule off.
 - A desktop notification when a session you are not looking at turns red.
 - The activity log, which records every change of verdict.
 
+## How commands are read
+
+Commands are split the way a shell would split them, honouring quotes, so
+`git commit -m "never run git push --force; rm -rf /"` is a commit, not a
+force-push and a wipe. Wrappers are looked through: `sudo`, `env`, `nohup`,
+`time`, `xargs`, leading `NAME=value` assignments, and the scripts handed to
+`bash -c` (and `sh`, `zsh`, ...), `cmd /c` and `powershell -Command`, up to three
+levels deep. It is still a pattern match: a destructive command hidden in a
+script file, built up from variables, or run through a program Sakshi does not
+know will not be seen.
+
 ## Activity log
 
 Each session appends to `<data dir>/sessions/<start time>-<session id>.jsonl`,
@@ -104,3 +115,14 @@ one protocol message per line. The data directory is
 `~/Library/Application Support/dev.maxsignalhq.sakshi` on macOS and
 `~/.local/share/sakshi` on Linux, or whatever `SAKSHI_DATA_DIR` says. Nothing is
 ever sent anywhere. `--no-log` turns logging off.
+
+Logs hold the commands an agent ran and the paths it touched, so on Unix the
+directory and files are readable by your user only. Before a command is written
+to disk, obvious secrets are masked as `[redacted]`: bearer tokens, the value
+after `--token`, `--password`, `--secret` and similar flags, `NAME=value` where
+the name contains `token`, `secret`, `password` or `key`-like words, well-known
+key prefixes (GitHub, GitLab, Anthropic, Slack, npm, AWS, Google), and the
+password in `https://user:password@host`. This is best effort: a secret in an
+unusual shape, or a quoted value with spaces in it, can slip through. The live
+details panel shows commands as they happened; only what reaches the disk, and
+so reports and replays, is masked.

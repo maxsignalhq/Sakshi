@@ -53,7 +53,7 @@ sakshi claude --resume       # arguments after the program go to the program
 
 Sakshi shows a session list on the left and the selected session's terminal beside it. Agents run exactly as they would in any terminal; Sakshi only watches.
 
-**Attached** (typing into a session): everything goes to the program. The one key Sakshi keeps is **Ctrl+]**, which detaches you back to the list.
+**Attached** (typing into a session): everything goes to the program. The one key Sakshi keeps is **Ctrl+]**, which detaches you back to the list. **Shift+PgUp / Shift+PgDn** scroll back through the session's output; typing or pasting returns you to the live screen. Pasting, including several lines at once, works: programs that ask to be told about pastes get them marked as pastes, so a pasted newline is text and not Enter.
 
 **On the list:**
 
@@ -63,6 +63,7 @@ Sakshi shows a session list on the left and the selected session's terminal besi
 | `Enter`, `l`, `1`-`9` | Attach (the digit jumps straight to that session) |
 | `n` | Start a new shell |
 | `c` | Start Claude Code (shown only when it is installed) |
+| `PgUp` / `PgDn`, `End` | Scroll the selected session's output back and forward; `End` returns to the live screen |
 | `t` or `Tab` | Show or hide the details panel |
 | `r` | Refresh the change summary |
 | `x` | Close the session and kill its process (press twice) |
@@ -114,12 +115,15 @@ Everything stays on your machine. Sakshi has no accounts, no telemetry and makes
 | macOS | `~/Library/Application Support/dev.maxsignalhq.sakshi` |
 | Linux | `~/.local/share/sakshi` |
 
-Set `SAKSHI_DATA_DIR` to put them elsewhere, or pass `--no-log` to record nothing. Diagnostics go to `sakshi.log` in the same directory (`SAKSHI_LOG=debug` for more).
+Logs are readable by your user only (on Unix), and the commands in them have obvious secrets masked: bearer tokens, `--token` and `--password` values, `NAME_SECRET=...` style assignments, well-known key shapes such as GitHub, Anthropic and AWS keys, and passwords inside URLs. That masking is a safety net, not a guarantee: a secret in an unusual shape, or a quoted value containing spaces, can get through, so treat the log directory as sensitive. Set `SAKSHI_DATA_DIR` to put them elsewhere, or pass `--no-log` to record nothing. Diagnostics go to `sakshi.log` in the same directory (`SAKSHI_LOG=debug` for more).
 
 ## Limits worth knowing
 
 - Sessions do not survive Sakshi exiting or its terminal closing; there is no background daemon.
-- Trust findings are pattern matches over commands, file paths and diffs. They will miss things and sometimes cry wolf. Treat a badge as a prompt to look.
+- Trust findings are pattern matches over commands, file paths and diffs. They look inside `bash -c`, `cmd /c`, `powershell -Command`, `sudo`, `env` and `xargs`, and they do not treat quoted text as a command, but they will still miss things (a script file that runs `rm -rf /`, say) and sometimes cry wolf. Treat a badge as a prompt to look.
+- Scrolling back uses the keyboard; the mouse wheel is not captured. How much history is kept is limited (1,000 rows per session).
+- On Windows the console reports a paste as a burst of key presses. Sakshi recognises a burst of eight or more characters containing a line break as a paste, so a very short multi-line paste can still be typed line by line.
+- Agents running inside WSL cannot reach Sakshi's Windows pipe, so they show only running or ended. Run Sakshi inside WSL instead, where it behaves as on Linux.
 - Change tracking needs a git repository. Work you had uncommitted before a session started is not blamed on it.
 - Live state exists for Claude Code only. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose, and [docs/ADAPTERS.md](docs/ADAPTERS.md) shows how to add one.
 
