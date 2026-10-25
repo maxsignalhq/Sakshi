@@ -463,7 +463,11 @@ mod tests {
     fn matches_program_names() {
         assert!(ClaudeAdapter.matches("claude"));
         assert!(ClaudeAdapter.matches("claude.exe"));
+        // Backslashes only separate path components on Windows.
+        #[cfg(windows)]
         assert!(ClaudeAdapter.matches("C:\\Users\\me\\.local\\bin\\claude.exe"));
+        #[cfg(not(windows))]
+        assert!(ClaudeAdapter.matches("/home/me/.local/bin/claude"));
         assert!(!ClaudeAdapter.matches("claude-code-router"));
     }
 }
