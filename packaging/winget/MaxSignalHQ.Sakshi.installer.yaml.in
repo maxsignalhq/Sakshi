@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: MaxSignalHQ.Sakshi
+PackageVersion: @@VERSION@@
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: sakshi.exe
+    PortableCommandAlias: sakshi
+Commands:
+  - sakshi
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/maxsignalhq/Sakshi/releases/download/v@@VERSION@@/sakshi-v@@VERSION@@-x86_64-pc-windows-msvc.zip
+    InstallerSha256: @@SHA256_X86_64_PC_WINDOWS_MSVC@@
+ManifestType: installer
+ManifestVersion: 1.6.0
