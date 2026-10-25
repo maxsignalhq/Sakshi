@@ -12,5 +12,8 @@ Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/maxsignalhq/Sakshi/releases/download/v@@VERSION@@/sakshi-v@@VERSION@@-x86_64-pc-windows-msvc.zip
     InstallerSha256: @@SHA256_X86_64_PC_WINDOWS_MSVC@@
+  - Architecture: arm64
+    InstallerUrl: https://github.com/maxsignalhq/Sakshi/releases/download/v@@VERSION@@/sakshi-v@@VERSION@@-aarch64-pc-windows-msvc.zip
+    InstallerSha256: @@SHA256_AARCH64_PC_WINDOWS_MSVC@@
 ManifestType: installer
 ManifestVersion: 1.6.0

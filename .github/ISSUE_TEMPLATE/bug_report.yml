@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Sakshi does not work as it should
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `sakshi claude` in a git repository
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sakshi version
+      description: Output of `sakshi --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Windows (WSL)
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and shell
+      placeholder: e.g. iTerm2 3.5 with zsh, Windows Terminal with PowerShell 7
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and version
+      placeholder: e.g. Claude Code 2.1.0
+  - type: textarea
+    id: log
+    attributes:
+      label: Diagnostics
+      description: |
+        Relevant lines from `sakshi.log` in the data directory (run with `SAKSHI_LOG=debug` for more).
+        Check it for anything private before pasting.
+      render: text

@@ -46,6 +46,9 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(arch["url"].endswith("sakshi-v1.2.3-x86_64-pc-windows-msvc.zip"))
         self.assertEqual(arch["hash"], "5" * 64)
         self.assertEqual(scoop["version"], "1.2.3")
+        arm = scoop["architecture"]["arm64"]
+        self.assertTrue(arm["url"].endswith("sakshi-v1.2.3-aarch64-pc-windows-msvc.zip"))
+        self.assertEqual(arm["hash"], "6" * 64)
 
     def test_homebrew_gets_each_platforms_own_checksum(self):
         formula = render.render("1.2.3", fake_sums())["homebrew/sakshi.rb"]
@@ -63,6 +66,8 @@ class RenderTests(unittest.TestCase):
         self.assertIn("sakshi-v1.2.3-x86_64-pc-windows-msvc.zip", text)
         self.assertIn("InstallerSha256: " + "5" * 64, text)
         self.assertIn("PortableCommandAlias: sakshi", text)
+        self.assertIn("sakshi-v1.2.3-aarch64-pc-windows-msvc.zip", text)
+        self.assertIn("InstallerSha256: " + "6" * 64, text)
 
     def test_a_missing_checksum_is_an_error(self):
         with self.assertRaisesRegex(ValueError, "no checksum for"):

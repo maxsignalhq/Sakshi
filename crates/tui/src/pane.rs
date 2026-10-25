@@ -234,8 +234,9 @@ impl Pane {
     fn observations(&self) -> Observations {
         let running_secs = self.session.started_at.elapsed().map_or(0, |d| d.as_secs());
         Observations {
-            // Once the process has ended there is nothing left to report.
-            hooks_expected: self.session.kind == AgentKind::Claude && self.exit.is_none(),
+            // Every agent with an adapter reports through hooks. Once the process
+            // has ended there is nothing left to report.
+            hooks_expected: self.session.kind != AgentKind::Generic && self.exit.is_none(),
             output_bytes: self.output_bytes,
             running_secs,
             root: Some(self.session.working_dir.display().to_string()),

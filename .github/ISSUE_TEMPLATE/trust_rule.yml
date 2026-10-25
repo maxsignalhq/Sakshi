@@ -1,0 +1,46 @@
+name: Trust rule
+description: A finding that was wrong, or something an agent did that Sakshi missed
+labels: ["trust-rule"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Trust rules are heuristics, so feedback on them is one of the most useful things you can send.
+        The rules are listed in [TRUST.md](https://github.com/maxsignalhq/Sakshi/blob/main/TRUST.md).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem
+      options:
+        - False alarm (Sakshi flagged something harmless)
+        - Missed (an agent did something risky and Sakshi said nothing)
+        - Wrong severity (right finding, wrong colour)
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Rule
+      description: The rule name from the details panel or `sakshi report`, if there was one.
+      placeholder: e.g. checks-suppressed
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: |
+        The smallest diff, file path or command that shows the problem. A snippet of `git diff` is ideal.
+        Remove anything private first.
+      render: diff
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sakshi version
+      description: Output of `sakshi --version`
