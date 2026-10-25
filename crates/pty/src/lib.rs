@@ -154,14 +154,48 @@ impl PtySession {
         }))
     }
 
-    /// Kill the child. Succeeds if it already exited.
+    /// Kill the child and everything it started. Succeeds if it already exited.
     pub fn kill(&mut self) -> Result<(), PtyError> {
         if self.try_wait()?.is_some() {
             return Ok(());
         }
-        self.child.kill()?;
+        if let Some(pid) = self.child.process_id() {
+            kill_process_tree(pid);
+        }
+        // The tree kill normally took the child too; if it did not (or the
+        // helper was unavailable), kill the child itself. An error here only
+        // means it is already gone.
+        let _ = self.child.kill();
         Ok(())
     }
+}
+
+/// Kill `pid` and its descendants.
+///
+/// A PTY child leads its own session, so on Unix its process group id is its
+/// pid and one signal to the group reaches everything it started. Windows has
+/// no process groups; `taskkill /T` walks the tree instead. Failure is not an
+/// error: the processes may simply have exited already.
+fn kill_process_tree(pid: u32) {
+    use std::process::{Command, Stdio};
+
+    #[cfg(unix)]
+    let mut command = {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", "--", &format!("-{pid}")]);
+        c
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = Command::new("taskkill");
+        c.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        c
+    };
+    let _ = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 #[cfg(test)]
@@ -260,6 +294,87 @@ mod tests {
             .await
             .expect("timed out waiting for output");
         assert!(String::from_utf8_lossy(&out).contains("env-ok-42"));
+    }
+
+    /// Whether any running process has `marker` on its command line.
+    fn process_with_arg_exists(marker: &str) -> bool {
+        #[cfg(windows)]
+        {
+            let script = format!(
+                "if (Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{marker}*' -and $_.Name -ne 'powershell.exe' }}) {{ exit 0 }} else {{ exit 1 }}"
+            );
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &script])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("pgrep")
+                .args(["-f", marker])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn killing_a_session_kills_the_programs_it_started_too() {
+        // A shell that starts a long-lived grandchild, identified by a number
+        // nothing else uses.
+        let marker = format!("{}", 31_000 + std::process::id() % 1000);
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec![
+                "/C".to_string(),
+                format!("ping -n {marker} 127.0.0.1 > nul"),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec!["-c".to_string(), format!("sleep {marker} & wait")],
+        );
+        let (mut session, mut rx) = PtySession::spawn(SpawnConfig {
+            program: program.into(),
+            args,
+            cwd: None,
+            env: Vec::new(),
+            size: TermSize { rows: 24, cols: 80 },
+        })
+        .expect("spawn");
+
+        // Wait for the grandchild to be up, answering ConPTY's startup query.
+        let mut answered = false;
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            while let Ok(chunk) = rx.try_recv() {
+                seen.extend_from_slice(&chunk);
+            }
+            if !answered && seen.windows(4).any(|w| w == b"\x1b[6n") {
+                session.write(b"\x1b[1;1R").expect("answer dsr");
+                answered = true;
+            }
+            if process_with_arg_exists(&marker) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(process_with_arg_exists(&marker), "grandchild never started");
+
+        session.kill().expect("kill");
+
+        let mut gone = false;
+        for _ in 0..50 {
+            if !process_with_arg_exists(&marker) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(gone, "the grandchild outlived its session");
     }
 
     #[test]

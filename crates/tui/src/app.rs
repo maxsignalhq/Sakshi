@@ -6,7 +6,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event as TermEvent, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers,
+};
+use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use sakshi_adapters::LaunchContext;
@@ -74,7 +78,11 @@ pub async fn run(config: RunConfig) -> Result<(), TuiError> {
     let endpoint = runtime.endpoint();
     let server = IpcServer::start(&endpoint)?;
     let mut terminal = ratatui::try_init()?;
+    // Ask the terminal to mark pastes, so a multi-line paste is text and not a
+    // series of Enter presses. Best effort: not every terminal supports it.
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
     let result = run_loop(&mut terminal, config, runtime, endpoint, server).await;
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -264,12 +272,20 @@ async fn run_loop(
     loop {
         terminal.draw(|frame| ui::draw(frame, &ws))?;
         let Some(first) = rx.recv().await else { break };
-        let mut quit = handle(&mut ws, &launcher, &config.shell, first);
         // Coalesce whatever else is already queued into one redraw.
-        while !quit {
-            match rx.try_recv() {
-                Ok(next) => quit = handle(&mut ws, &launcher, &config.shell, next),
-                Err(_) => break,
+        let mut batch = vec![first];
+        while let Ok(next) = rx.try_recv() {
+            batch.push(next);
+        }
+        if cfg!(windows) {
+            // The Windows console never reports pastes, only key presses.
+            batch = coalesce_pastes(batch);
+        }
+        let mut quit = false;
+        for event in batch {
+            if handle(&mut ws, &launcher, &config.shell, event) {
+                quit = true;
+                break;
             }
         }
         if quit {
@@ -286,6 +302,73 @@ async fn run_loop(
         let _ = thread.join();
     }
     Ok(())
+}
+
+/// The fewest key presses in one burst that count as a paste.
+const PASTE_BURST_MIN: usize = 8;
+
+/// The character a plain text key press stands for, if it is one.
+fn typed_char(key: &KeyEvent) -> Option<char> {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        || key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char(c) => Some(c),
+        KeyCode::Enter => Some('\n'),
+        KeyCode::Tab => Some('\t'),
+        _ => None,
+    }
+}
+
+/// Turn a burst of text key presses into one paste.
+///
+/// Terminals with bracketed paste say when text is pasted. The Windows
+/// console does not: a paste arrives as key presses, and a newline in it would
+/// submit whatever the program has so far. A person cannot type eight or more
+/// characters, including a line break, between two screen updates, so such a
+/// burst is a paste. Key releases inside the burst are dropped with it.
+fn coalesce_pastes(events: Vec<AppEvent>) -> Vec<AppEvent> {
+    fn flush(out: &mut Vec<AppEvent>, text: &mut String, held: &mut Vec<AppEvent>) {
+        if text.chars().count() >= PASTE_BURST_MIN && text.contains('\n') {
+            out.push(AppEvent::Input(TermEvent::Paste(std::mem::take(text))));
+            held.clear();
+        } else {
+            out.append(held);
+        }
+        text.clear();
+    }
+
+    let mut out = Vec::with_capacity(events.len());
+    let mut text = String::new();
+    let mut held: Vec<AppEvent> = Vec::new();
+    for event in events {
+        let typed = match &event {
+            AppEvent::Input(TermEvent::Key(key)) => typed_char(key),
+            _ => None,
+        };
+        let is_release = matches!(
+            &event,
+            AppEvent::Input(TermEvent::Key(key)) if key.kind == KeyEventKind::Release
+        );
+        match typed {
+            Some(c) => {
+                text.push(c);
+                held.push(event);
+            }
+            // A release between the presses of a burst belongs to the burst.
+            None if is_release && !held.is_empty() => held.push(event),
+            None => {
+                flush(&mut out, &mut text, &mut held);
+                out.push(event);
+            }
+        }
+    }
+    flush(&mut out, &mut text, &mut held);
+    out
 }
 
 /// Run the diffs the workspace asked for, off the UI thread.
@@ -335,6 +418,7 @@ fn handle(ws: &mut Workspace, launcher: &Launcher, shell: &str, ev: AppEvent) ->
         AppEvent::Input(TermEvent::Resize(width, height)) => {
             ws.resize(Rect::new(0, 0, width, height));
         }
+        AppEvent::Input(TermEvent::Paste(text)) => ws.handle_paste(&text),
         AppEvent::Input(_) => {}
         AppEvent::Output(id, bytes) => ws.handle_output(id, &bytes),
         AppEvent::Agent(event) => ws.handle_event(&event),
@@ -384,6 +468,86 @@ mod tests {
         assert_eq!(program_stem("/usr/bin/zsh"), "zsh");
         assert_eq!(program_stem("powershell.exe"), "powershell");
         assert_eq!(program_stem("claude"), "claude");
+    }
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> AppEvent {
+        AppEvent::Input(TermEvent::Key(KeyEvent::new_with_kind(
+            code,
+            KeyModifiers::NONE,
+            kind,
+        )))
+    }
+
+    /// Press and release of each character, as the Windows console reports it.
+    fn typed(text: &str) -> Vec<AppEvent> {
+        text.chars()
+            .flat_map(|c| {
+                let code = if c == '\n' {
+                    KeyCode::Enter
+                } else {
+                    KeyCode::Char(c)
+                };
+                [
+                    key(code, KeyEventKind::Press),
+                    key(code, KeyEventKind::Release),
+                ]
+            })
+            .collect()
+    }
+
+    fn describe(events: &[AppEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                AppEvent::Input(TermEvent::Paste(t)) => format!("paste:{t}"),
+                AppEvent::Input(TermEvent::Key(k)) => format!("{:?}/{:?}", k.code, k.kind),
+                _ => "other".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_burst_with_a_line_break_becomes_one_paste() {
+        let out = coalesce_pastes(typed("hello\nworld"));
+        assert_eq!(describe(&out), ["paste:hello\nworld"]);
+    }
+
+    #[test]
+    fn typing_never_becomes_a_paste() {
+        // Slow typing arrives a character or two at a time.
+        let out = coalesce_pastes(typed("ls\n"));
+        assert_eq!(out.len(), 6);
+        assert!(describe(&out).iter().all(|d| !d.starts_with("paste")));
+        // A long burst with no line break is typed text or a held key.
+        let out = coalesce_pastes(typed("aaaaaaaaaaaaaaaa"));
+        assert_eq!(out.len(), 32);
+    }
+
+    #[test]
+    fn a_burst_is_cut_at_other_events_and_other_keys() {
+        let mut events = typed("short\n");
+        events.push(key(KeyCode::Up, KeyEventKind::Press));
+        events.extend(typed("a long enough line\nof pasted text"));
+        events.push(AppEvent::Tick);
+        let out = coalesce_pastes(events);
+        let d = describe(&out);
+        assert_eq!(d.len(), 12 + 1 + 1 + 1, "{d:?}");
+        assert!(d.contains(&"paste:a long enough line\nof pasted text".to_string()));
+        assert_eq!(d.last().map(String::as_str), Some("other"));
+    }
+
+    #[test]
+    fn modified_keys_break_a_burst() {
+        let mut events = typed("abcd\nefgh");
+        events.insert(
+            4,
+            AppEvent::Input(TermEvent::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ))),
+        );
+        let out = coalesce_pastes(events);
+        assert!(describe(&out).iter().all(|d| !d.starts_with("paste")));
     }
 
     #[test]

@@ -69,14 +69,18 @@ pub(crate) fn draw(frame: &mut Frame, ws: &Workspace) {
 
     match ws.selected_pane() {
         Some(pane) => {
+            let scrolled = match pane.scrolled() {
+                0 => String::new(),
+                rows => format!(" [{rows} rows back; Shift+PgDn returns]"),
+            };
             let title = format!(
-                " {} - {} ",
+                " {} - {}{scrolled} ",
                 pane.session.name,
                 pane.session.working_dir.display()
             );
             frame.render_widget(Block::bordered().title(title), regions.terminal);
             render_terminal(frame.buffer_mut(), regions.terminal_inner, pane.emulator());
-            if ws.focus == Focus::Terminal && pane.exit.is_none() {
+            if ws.focus == Focus::Terminal && pane.exit.is_none() && pane.scrolled() == 0 {
                 if let Some((row, col)) = pane.emulator().cursor() {
                     let inner = regions.terminal_inner;
                     if row < inner.height && col < inner.width {
@@ -287,14 +291,14 @@ pub(crate) fn footer_text(ws: &Workspace) -> String {
                 " Process exited with code {} - press any key to return to the list",
                 info.code
             ),
-            None => " Ctrl+] detach".to_string(),
+            None => " Ctrl+] detach  Shift+PgUp/PgDn scroll".to_string(),
         },
         Focus::List => {
             let mut hints = String::from(" up/down select  Enter attach  n shell");
             for agent in &ws.agents {
                 hints.push_str(&format!("  {} {}", agent.key, agent.name));
             }
-            hints.push_str("  t details  r refresh  x close  q quit");
+            hints.push_str("  PgUp/PgDn scroll  t details  r refresh  x close  q quit");
             hints
         }
     }
@@ -557,6 +561,20 @@ mod tests {
         assert!(screen.contains("Press any key to continue"), "{screen}");
         ws.handle_key(press(KeyCode::Char('x')));
         assert!(!render(&ws, 120, 30).contains("while you were away"));
+    }
+
+    #[test]
+    fn a_scrolled_view_says_so_in_the_title_and_hides_the_cursor() {
+        let (mut ws, _, _) = workspace_with(&["alpha"]);
+        let text: String = (0..300).map(|i| format!("row{i}\r\n")).collect();
+        ws.handle_output(SessionId(1), text.as_bytes());
+        ws.handle_key(press(KeyCode::Enter));
+        assert!(!render(&ws, 120, 30).contains("rows back"));
+        ws.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT));
+        let screen = render(&ws, 120, 30);
+        assert!(screen.contains("rows back"), "{screen}");
+        // The older output is on screen, not the live tail.
+        assert!(!screen.contains("row299"), "{screen}");
     }
 
     #[test]

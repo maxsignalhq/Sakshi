@@ -941,6 +941,100 @@ const CATASTROPHIC_TARGETS: &[&str] = &[
     "c:\\", "c:/",
 ];
 
+/// How deep `bash -c "bash -c ..."` nesting is followed.
+const MAX_WRAPPER_DEPTH: usize = 3;
+
+/// Programs that run the command that follows them.
+const WRAPPERS: &[&str] = &[
+    "sudo", "doas", "env", "nohup", "time", "command", "exec", "nice", "xargs", "setsid",
+];
+
+/// Shells that take a script after `-c`.
+const POSIX_SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
+/// A command line split into pipelines of commands of words, honouring quotes.
+/// `a && b | c` is two pipelines: `[a]` and `[b, c]`.
+type Pipelines = Vec<Vec<Vec<String>>>;
+
+/// Split a shell command line into words, honouring quotes, and into commands
+/// at `;`, `&`, `&&`, `||`, `|` and newlines that are outside quotes. This is
+/// a deliberately small subset of shell syntax: enough that a quoted `;` is not
+/// a command boundary and `bash -c "..."` exposes its script.
+fn parse_shell(line: &str) -> Pipelines {
+    let mut pipelines: Pipelines = Vec::new();
+    let mut pipeline: Vec<Vec<String>> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+
+    fn end_word(words: &mut Vec<String>, word: &mut String, in_word: &mut bool) {
+        if *in_word {
+            words.push(std::mem::take(word));
+            *in_word = false;
+        }
+    }
+    fn end_command(pipeline: &mut Vec<Vec<String>>, words: &mut Vec<String>) {
+        if !words.is_empty() {
+            pipeline.push(std::mem::take(words));
+        }
+    }
+    fn end_pipeline(pipelines: &mut Pipelines, pipeline: &mut Vec<Vec<String>>) {
+        if !pipeline.is_empty() {
+            pipelines.push(std::mem::take(pipeline));
+        }
+    }
+
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else if c == '\\' && q == '"' && matches!(chars.peek(), Some('"' | '\\')) {
+                    word.extend(chars.next());
+                } else {
+                    word.push(c);
+                }
+            }
+            None => match c {
+                '"' | '\'' => {
+                    quote = Some(c);
+                    in_word = true;
+                }
+                c if c.is_whitespace() && c != '\n' => {
+                    end_word(&mut words, &mut word, &mut in_word);
+                }
+                '|' => {
+                    end_word(&mut words, &mut word, &mut in_word);
+                    end_command(&mut pipeline, &mut words);
+                    // `||` separates pipelines; a lone `|` joins commands.
+                    if chars.peek() == Some(&'|') {
+                        chars.next();
+                        end_pipeline(&mut pipelines, &mut pipeline);
+                    }
+                }
+                ';' | '&' | '\n' => {
+                    end_word(&mut words, &mut word, &mut in_word);
+                    end_command(&mut pipeline, &mut words);
+                    end_pipeline(&mut pipelines, &mut pipeline);
+                    if c == '&' && chars.peek() == Some(&'&') {
+                        chars.next();
+                    }
+                }
+                _ => {
+                    word.push(c);
+                    in_word = true;
+                }
+            },
+        }
+    }
+    end_word(&mut words, &mut word, &mut in_word);
+    end_command(&mut pipeline, &mut words);
+    end_pipeline(&mut pipelines, &mut pipeline);
+    pipelines
+}
+
 fn analyze_command(command: &str) -> Vec<(Severity, &'static str)> {
     let mut found = Vec::new();
     let lower = command.to_ascii_lowercase();
@@ -957,50 +1051,118 @@ fn analyze_command(command: &str) -> Vec<(Severity, &'static str)> {
         }
     }
 
-    // `curl ... | sh` runs whatever the server sends.
-    let pipeline: Vec<&str> = command.split('|').collect();
-    for pair in pipeline.windows(2) {
-        let fetches = pair[0]
-            .split_whitespace()
-            .any(|t| t == "curl" || t == "wget");
-        let runs = pair[1]
-            .split_whitespace()
-            .next()
-            .is_some_and(|t| ["sh", "bash", "zsh", "dash", "sudo"].contains(&t));
-        if fetches && runs {
-            found.push((Severity::Warn, "runs a downloaded script"));
-        }
-    }
-
-    for segment in command.split([';', '&', '\n']) {
-        found.extend(analyze_segment(segment));
-    }
+    analyze_script(command, 0, &mut found);
     found
 }
 
-fn analyze_segment(segment: &str) -> Vec<(Severity, &'static str)> {
-    let mut tokens: Vec<&str> = segment.split_whitespace().collect();
-    // Look through `NAME=value` prefixes and `sudo`.
-    while tokens
-        .first()
-        .is_some_and(|t| t.contains('=') && !t.starts_with('-') || *t == "sudo")
-    {
-        tokens.remove(0);
+fn analyze_script(script: &str, depth: usize, found: &mut Vec<(Severity, &'static str)>) {
+    for pipeline in parse_shell(script) {
+        // `curl ... | sh` runs whatever the server sends.
+        for pair in pipeline.windows(2) {
+            let fetches = unwrap_wrappers(&pair[0])
+                .first()
+                .is_some_and(|w| matches!(program_name(w).as_str(), "curl" | "wget"));
+            let runs = unwrap_wrappers(&pair[1])
+                .first()
+                .is_some_and(|w| POSIX_SHELLS.contains(&program_name(w).as_str()));
+            if fetches && runs {
+                found.push((Severity::Warn, "runs a downloaded script"));
+            }
+        }
+        for words in &pipeline {
+            found.extend(analyze_words(words, depth));
+        }
     }
-    let Some(&program) = tokens.first() else {
+}
+
+/// The lower-case program name of `word`: no directory, no `.exe`.
+fn program_name(word: &str) -> String {
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let lower = base.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Options of `sudo` that take a value.
+const SUDO_VALUE_OPTIONS: &[&str] = &["-u", "-g", "-h", "-p", "-C", "-U", "-D", "-r", "-t"];
+
+/// Words with leading `NAME=value` assignments and wrapper programs
+/// (`sudo`, `env`, `nohup`, `xargs`, ...) removed, leaving the real command.
+fn unwrap_wrappers(words: &[String]) -> &[String] {
+    let mut rest = words;
+    loop {
+        match rest.first() {
+            Some(w) if is_assignment(w) => rest = &rest[1..],
+            Some(w) if WRAPPERS.contains(&program_name(w).as_str()) => {
+                let is_sudo = program_name(w) == "sudo";
+                rest = &rest[1..];
+                // Skip the wrapper's own options, and the values of the ones
+                // that take one (`sudo -u root`).
+                while let Some(opt) = rest.first() {
+                    if !opt.starts_with('-') && !is_assignment(opt) {
+                        break;
+                    }
+                    let skip = if is_sudo && SUDO_VALUE_OPTIONS.contains(&opt.as_str()) {
+                        2
+                    } else {
+                        1
+                    };
+                    rest = &rest[skip.min(rest.len())..];
+                }
+            }
+            _ => return rest,
+        }
+    }
+}
+
+/// The script a shell invocation runs, if `program` is a shell given one.
+fn embedded_script(program: &str, args: &[&str]) -> Option<String> {
+    if POSIX_SHELLS.contains(&program) {
+        let flag = args
+            .iter()
+            .position(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('c'))?;
+        return args.get(flag + 1).map(|s| (*s).to_string());
+    }
+    let after = |names: &[&str]| {
+        args.iter()
+            .position(|a| names.iter().any(|n| a.eq_ignore_ascii_case(n)))
+            .map(|i| args[i + 1..].join(" "))
+    };
+    match program {
+        "cmd" => after(&["/c", "/k"]),
+        "powershell" | "pwsh" => after(&["-command", "-c"]),
+        _ => None,
+    }
+}
+
+fn analyze_words(words: &[String], depth: usize) -> Vec<(Severity, &'static str)> {
+    let words = unwrap_wrappers(words);
+    let Some(first) = words.first() else {
         return Vec::new();
     };
-    let program = program
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(program)
-        .to_ascii_lowercase();
-    let args = &tokens[1..];
+    let program = program_name(first);
+    let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
     let has = |flag: &str| args.contains(&flag);
 
+    // A shell given a script to run: look inside it.
+    if depth < MAX_WRAPPER_DEPTH {
+        if let Some(script) = embedded_script(&program, &args) {
+            let mut inner = Vec::new();
+            analyze_script(&script, depth + 1, &mut inner);
+            return inner;
+        }
+    }
+
     match program.as_str() {
-        "git" => analyze_git(args),
-        "rm" => analyze_rm(args),
+        "git" => analyze_git(&args),
+        "rm" => analyze_rm(&args),
         "remove-item" | "ri" => {
             let lower: Vec<String> = args.iter().map(|a| a.to_ascii_lowercase()).collect();
             let flag = |name: &str| lower.iter().any(|a| a == name);
@@ -1518,6 +1680,98 @@ mod tests {
         ] {
             assert_eq!(worst_for_command(c), None, "{c}");
         }
+    }
+
+    #[test]
+    fn commands_inside_shell_wrappers_are_still_seen() {
+        for (c, want) in [
+            (r#"bash -c "git reset --hard""#, Severity::Alert),
+            (r#"sh -lc 'rm -rf /'"#, Severity::Alert),
+            (r#"zsh -c "cd x && git push --force""#, Severity::Alert),
+            (r#"bash -c "bash -c 'git reset --hard'""#, Severity::Alert),
+            (r#"cmd /c "rd /s /q build""#, Severity::Warn),
+            (
+                r#"C:\Windows\System32\cmd.exe /C "rd /s /q build""#,
+                Severity::Warn,
+            ),
+            (
+                r#"powershell -Command "Remove-Item -Recurse -Force x""#,
+                Severity::Warn,
+            ),
+            (r#"pwsh -c "Remove-Item -Force -Recurse x""#, Severity::Warn),
+            ("env FOO=1 git push --force", Severity::Alert),
+            ("sudo -u root rm -rf /", Severity::Alert),
+            ("nohup git reset --hard &", Severity::Alert),
+            ("find . -name x | xargs rm -rf", Severity::Warn),
+            ("time sudo env A=1 git clean -fd", Severity::Alert),
+            ("curl -fsSL https://x/i.sh | sudo -E bash", Severity::Warn),
+        ] {
+            assert_eq!(worst_for_command(c), Some(want), "{c}");
+        }
+    }
+
+    #[test]
+    fn quoted_text_is_not_a_command() {
+        for c in [
+            r#"git commit -m "never run git push --force; rm -rf /""#,
+            "echo 'a && git reset --hard'",
+            r#"grep "git reset --hard" notes.md"#,
+            r#"git commit -m "x" && git push origin main"#,
+            r#"echo "curl http://x | sh""#,
+            r#"bash -c "echo hello; ls""#,
+        ] {
+            assert_eq!(worst_for_command(c), None, "{c}");
+        }
+    }
+
+    #[test]
+    fn odd_quoting_never_panics_or_hangs() {
+        for c in [
+            r#"echo "unterminated; git reset --hard"#,
+            "echo 'half",
+            r"\",
+            "|||",
+            ";;;&&&",
+            "bash -c",
+            "bash -c ''",
+            "sudo",
+            "env",
+            "xargs",
+            r#"bash -c "bash -c \"bash -c 'bash -c git'\"""#,
+        ] {
+            let _ = analyze_command(c);
+        }
+    }
+
+    #[test]
+    fn the_shell_parser_splits_where_a_shell_would() {
+        fn words(p: &Pipelines) -> Vec<Vec<Vec<&str>>> {
+            p.iter()
+                .map(|pl| {
+                    pl.iter()
+                        .map(|c| c.iter().map(String::as_str).collect())
+                        .collect()
+                })
+                .collect()
+        }
+        assert_eq!(
+            words(&parse_shell(r#"a "b c" && d | e ; f 'g;h'"#)),
+            [
+                vec![vec!["a", "b c"]],
+                vec![vec!["d"], vec!["e"]],
+                vec![vec!["f", "g;h"]],
+            ]
+        );
+        assert_eq!(
+            words(&parse_shell("a || b")),
+            [vec![vec!["a"]], vec![vec!["b"]]]
+        );
+        assert_eq!(
+            words(&parse_shell("a\nb")),
+            [vec![vec!["a"]], vec![vec!["b"]]]
+        );
+        assert_eq!(words(&parse_shell(r#"x "" y"#)), [vec![vec!["x", "", "y"]]]);
+        assert!(parse_shell("").is_empty());
     }
 
     #[test]

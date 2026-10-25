@@ -28,6 +28,15 @@ pub trait TerminalEmulator {
     fn cursor(&self) -> Option<(u16, u16)>;
     /// Whether the child asked for application cursor keys (DECCKM).
     fn application_cursor(&self) -> bool;
+    /// Whether the child asked to be told about pastes (bracketed paste).
+    fn bracketed_paste(&self) -> bool;
+    /// Rows the view is scrolled back from the live screen; 0 is live.
+    fn scrollback(&self) -> usize;
+    /// Rows of history available to scroll back through.
+    fn scrollback_len(&self) -> usize;
+    /// Scroll the view back `rows` from the live screen, clamped to the
+    /// history available. 0 returns to the live screen.
+    fn set_scrollback(&mut self, rows: usize);
     /// Take the bytes the emulator owes the child as answers to its queries
     /// (for example the cursor position report), leaving none pending.
     fn take_replies(&mut self) -> Vec<u8>;
@@ -148,6 +157,22 @@ impl TerminalEmulator for Vt100Emulator {
         self.parser.screen().application_cursor()
     }
 
+    fn bracketed_paste(&self) -> bool {
+        self.parser.screen().bracketed_paste()
+    }
+
+    fn scrollback(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    fn scrollback_len(&self) -> usize {
+        self.parser.screen().scrollback_len()
+    }
+
+    fn set_scrollback(&mut self, rows: usize) {
+        self.parser.screen_mut().set_scrollback(rows);
+    }
+
     fn take_replies(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.parser.callbacks_mut().pending)
     }
@@ -215,6 +240,63 @@ mod tests {
         assert!(e.take_replies().is_empty());
         e.process(b"ab\r\nc\x1b[6n");
         assert_eq!(e.take_replies(), b"\x1b[2;2R".to_vec());
+    }
+
+    fn lines(n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|i| format!("line{i}\r\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    #[test]
+    fn output_that_scrolled_off_can_be_viewed_again() {
+        let mut e = emu(); // 5 rows
+        e.process(&lines(12));
+        assert!(e.scrollback_len() >= 7);
+        assert_eq!(e.scrollback(), 0);
+        // Live view: the newest lines (line8 is on top, line11 above the cursor).
+        assert_eq!(symbol(&e, 0, 4), "8");
+        let history = e.scrollback_len();
+        e.set_scrollback(history);
+        assert_eq!(e.scrollback(), history);
+        // Scrolled to the top of the history: the first lines are back.
+        let top: String = (0..5).map(|c| symbol(&e, 0, c)).collect();
+        assert_eq!(top, "line0");
+        e.set_scrollback(0);
+        assert_eq!(symbol(&e, 0, 4), "8");
+    }
+
+    #[test]
+    fn scrolling_back_is_clamped_to_the_history() {
+        let mut e = emu();
+        e.process(&lines(8));
+        e.set_scrollback(10_000);
+        assert_eq!(e.scrollback(), e.scrollback_len());
+        let mut fresh = emu();
+        fresh.set_scrollback(5);
+        assert_eq!(fresh.scrollback(), 0);
+    }
+
+    #[test]
+    fn a_scrolled_view_holds_still_while_new_output_arrives() {
+        let mut e = emu();
+        e.process(&lines(12));
+        e.set_scrollback(3);
+        let before: String = (0..5).map(|c| symbol(&e, 0, c)).collect();
+        e.process(&lines(2));
+        let after: String = (0..5).map(|c| symbol(&e, 0, c)).collect();
+        assert_eq!(before, after, "the view drifted");
+    }
+
+    #[test]
+    fn reports_bracketed_paste_mode() {
+        let mut e = emu();
+        assert!(!e.bracketed_paste());
+        e.process(b"\x1b[?2004h");
+        assert!(e.bracketed_paste());
+        e.process(b"\x1b[?2004l");
+        assert!(!e.bracketed_paste());
     }
 
     #[test]

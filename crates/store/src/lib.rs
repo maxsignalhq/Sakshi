@@ -12,7 +12,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
-use sakshi_core::{Event, SessionId};
+use sakshi_core::{redact_event, Event, SessionId};
 use sakshi_ipc::{encode_line, parse_line};
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
@@ -37,6 +37,37 @@ pub fn config_path() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     ProjectDirs::from("dev", "maxsignalhq", "sakshi").map(|d| d.config_dir().join("config.toml"))
+}
+
+/// Create `path` and any missing parents, readable by the current user only on
+/// Unix. Existing directories keep their permissions.
+pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+/// Open `path` for appending, creating it readable by the current user only on
+/// Unix. Logs hold commands and file paths, so other users have no business
+/// reading them.
+pub fn open_private_append(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Where session logs live inside a data directory.
@@ -88,15 +119,16 @@ pub struct ActivityLog {
 impl ActivityLog {
     /// Create `<dir>/<start>-<session id>.jsonl`, creating `dir` if needed.
     pub fn create(dir: &Path, id: SessionId, started: OffsetDateTime) -> io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        create_private_dir_all(dir)?;
         let path = dir.join(format!("{}-{id}.jsonl", format_stamp(started)));
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_private_append(&path)?;
         Ok(Self { file, path })
     }
 
-    /// Append one event. Flushed immediately so a crash loses nothing.
+    /// Append one event, with secrets masked (see [`redact_event`]). Flushed
+    /// immediately so a crash loses nothing.
     pub fn append(&mut self, event: &Event) -> io::Result<()> {
-        let mut line = encode_line(event);
+        let mut line = encode_line(&redact_event(event));
         line.push('\n');
         self.file.write_all(line.as_bytes())?;
         self.file.flush()
@@ -290,6 +322,36 @@ mod tests {
             log.append(e).unwrap();
         }
         assert_eq!(read_events(log.path()).unwrap(), events);
+    }
+
+    #[test]
+    fn secrets_are_masked_in_what_reaches_the_disk() {
+        let dir = Scratch::new("redact");
+        let mut set = LogSet::new(dir.0.clone());
+        set.record(&at(
+            0,
+            1,
+            EventKind::Command {
+                command: "curl --token abc123 https://x".into(),
+            },
+        ));
+        let log = &list_logs(&dir.0).unwrap()[0];
+        let raw = std::fs::read_to_string(&log.path).unwrap();
+        assert!(!raw.contains("abc123"), "{raw}");
+        assert!(raw.contains("[redacted]"), "{raw}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logs_are_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Scratch::new("perms");
+        let mut set = LogSet::new(dir.0.join("sessions"));
+        set.record(&msg(0, 1, "hi"));
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.0.join("sessions")), 0o700);
+        let log = &list_logs(&dir.0.join("sessions")).unwrap()[0];
+        assert_eq!(mode(&log.path), 0o600);
     }
 
     #[test]

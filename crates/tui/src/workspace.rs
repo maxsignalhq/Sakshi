@@ -188,6 +188,19 @@ impl Workspace {
             self.focus = Focus::List;
             return Outcome::Continue;
         };
+        // Shift+PageUp/PageDown scroll back through the output instead of
+        // reaching the program.
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        {
+            let page = pane.page_rows();
+            pane.scroll(if key.code == KeyCode::PageUp {
+                page
+            } else {
+                -page
+            });
+            return Outcome::Continue;
+        }
         // After the process ended there is nothing to type into.
         if is_detach_chord(key) || pane.exit.is_some() {
             self.focus = Focus::List;
@@ -207,6 +220,7 @@ impl Workspace {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.select(-1),
             KeyCode::Down | KeyCode::Char('j') => self.select(1),
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::End => self.scroll_selected(key.code),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.attach(),
             KeyCode::Char(c @ '1'..='9') => {
                 let index = usize::from(c as u8 - b'1');
@@ -240,6 +254,32 @@ impl Workspace {
         }
         let last = self.panes.len() - 1;
         self.selected = self.selected.saturating_add_signed(delta).min(last);
+    }
+
+    /// PageUp/PageDown/End on the list scroll the selected session's view.
+    fn scroll_selected(&mut self, code: KeyCode) {
+        let Some(pane) = self.panes.get_mut(self.selected) else {
+            return;
+        };
+        let page = pane.page_rows();
+        match code {
+            KeyCode::PageUp => pane.scroll(page),
+            KeyCode::PageDown => pane.scroll(-page),
+            _ => pane.snap_to_bottom(),
+        }
+    }
+
+    /// Text pasted into the terminal. It goes to the attached session only;
+    /// anywhere else, or while a summary is showing, it is ignored.
+    pub fn handle_paste(&mut self, text: &str) {
+        if self.overlay.take().is_some() || self.focus != Focus::Terminal {
+            return;
+        }
+        if let Some(pane) = self.panes.get_mut(self.selected) {
+            if pane.exit.is_none() {
+                pane.paste(text);
+            }
+        }
     }
 
     fn attach(&mut self) {
@@ -884,6 +924,115 @@ pub(crate) mod tests {
         ws.notice = Some("oops".into());
         ws.handle_key(press(KeyCode::Char('j')));
         assert_eq!(ws.notice, None);
+    }
+
+    // ---- paste and scrollback
+
+    fn shift(code: KeyCode) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::SHIFT, KeyEventKind::Press)
+    }
+
+    #[test]
+    fn a_paste_reaches_only_the_attached_session() {
+        let (mut ws, states, _) = workspace_with(&["a", "b"]);
+        ws.handle_paste("ignored on the list");
+        assert!(states.iter().all(|s| s.lock().unwrap().written.is_empty()));
+        ws.handle_key(press(KeyCode::Enter));
+        ws.handle_paste("one\ntwo");
+        // The fake child did not ask for bracketed paste, so newlines are Enter.
+        assert_eq!(states[0].lock().unwrap().written, b"one\rtwo");
+        assert!(states[1].lock().unwrap().written.is_empty());
+    }
+
+    #[test]
+    fn a_paste_is_bracketed_when_the_program_asked() {
+        let (mut ws, states, _) = workspace_with(&["a"]);
+        ws.handle_output(SessionId(1), b"\x1b[?2004h");
+        ws.handle_key(press(KeyCode::Enter));
+        ws.handle_paste("one\ntwo");
+        assert_eq!(
+            states[0].lock().unwrap().written,
+            b"\x1b[200~one\ntwo\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn a_paste_after_exit_or_over_a_summary_goes_nowhere() {
+        let (mut ws, states, _) = workspace_with(&["a"]);
+        ws.handle_key(press(KeyCode::Enter));
+        ws.overlay = Some(Overlay {
+            title: "t".into(),
+            lines: vec![],
+        });
+        ws.handle_paste("x");
+        assert_eq!(ws.overlay, None);
+        assert!(states[0].lock().unwrap().written.is_empty());
+        states[0].lock().unwrap().exit = exited(true);
+        ws.poll_exits();
+        ws.handle_paste("y");
+        assert!(states[0].lock().unwrap().written.is_empty());
+    }
+
+    fn print_lines(ws: &mut Workspace, n: usize) {
+        let text: String = (0..n).map(|i| format!("row{i}\r\n")).collect();
+        ws.handle_output(SessionId(1), text.as_bytes());
+    }
+
+    #[test]
+    fn shift_page_keys_scroll_the_attached_view_and_are_not_forwarded() {
+        let (mut ws, states, _) = workspace_with(&["a"]);
+        print_lines(&mut ws, 400);
+        ws.handle_key(press(KeyCode::Enter));
+        ws.handle_key(shift(KeyCode::PageUp));
+        let up = ws.panes[0].scrolled();
+        assert!(up > 0);
+        ws.handle_key(shift(KeyCode::PageUp));
+        assert!(ws.panes[0].scrolled() > up);
+        ws.handle_key(shift(KeyCode::PageDown));
+        assert_eq!(ws.panes[0].scrolled(), up);
+        assert!(states[0].lock().unwrap().written.is_empty());
+    }
+
+    #[test]
+    fn typing_or_pasting_returns_to_the_live_screen() {
+        let (mut ws, _, _) = workspace_with(&["a"]);
+        print_lines(&mut ws, 400);
+        ws.handle_key(press(KeyCode::Enter));
+        ws.handle_key(shift(KeyCode::PageUp));
+        assert!(ws.panes[0].scrolled() > 0);
+        ws.handle_key(press(KeyCode::Char('x')));
+        assert_eq!(ws.panes[0].scrolled(), 0);
+        ws.handle_key(shift(KeyCode::PageUp));
+        ws.handle_paste("y");
+        assert_eq!(ws.panes[0].scrolled(), 0);
+    }
+
+    #[test]
+    fn the_list_scrolls_the_selected_session_with_page_keys() {
+        let (mut ws, _, _) = workspace_with(&["a"]);
+        print_lines(&mut ws, 400);
+        ws.handle_key(press(KeyCode::PageUp));
+        assert!(ws.panes[0].scrolled() > 0);
+        ws.handle_key(press(KeyCode::PageDown));
+        assert_eq!(ws.panes[0].scrolled(), 0);
+        ws.handle_key(press(KeyCode::PageUp));
+        ws.handle_key(press(KeyCode::End));
+        assert_eq!(ws.panes[0].scrolled(), 0);
+        // Scrolling an empty list does nothing.
+        let (mut empty, _, _) = workspace_with(&[]);
+        empty.handle_key(press(KeyCode::PageUp));
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_oldest_output() {
+        let (mut ws, _, _) = workspace_with(&["a"]);
+        print_lines(&mut ws, 50);
+        for _ in 0..20 {
+            ws.handle_key(press(KeyCode::PageUp));
+        }
+        let top = ws.panes[0].scrolled();
+        ws.handle_key(press(KeyCode::PageUp));
+        assert_eq!(ws.panes[0].scrolled(), top);
     }
 
     // ---- while you were away
