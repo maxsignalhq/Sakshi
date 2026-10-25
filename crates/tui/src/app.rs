@@ -1,25 +1,23 @@
-//! The TUI application: one live terminal session with a session list and footer.
+//! The TUI application: owns the terminal, the event loop and process launching.
 
 use std::io;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::DefaultTerminal;
 use sakshi_adapters::LaunchContext;
-use sakshi_core::{AgentKind, Session, SessionId};
+use sakshi_core::{AgentKind, Event, Session, SessionId};
 use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
-use sakshi_pty::{ExitInfo, PtyError, PtySession, SpawnConfig};
+use sakshi_pty::{OutputReceiver, PtyError, PtySession, SpawnConfig, TermSize};
 use tokio::sync::mpsc;
 
-use crate::emulator::{TerminalEmulator, Vt100Emulator};
-use crate::{keys, layout};
+use crate::notify::{DesktopNotifier, NoopNotifier, Notifier};
+use crate::pane::Pane;
+use crate::workspace::{AgentInfo, NewSession, Outcome, Workspace};
+use crate::{layout, ui};
 
 /// Errors that end the TUI.
 #[derive(Debug, thiserror::Error)]
@@ -27,22 +25,35 @@ pub enum TuiError {
     /// Terminal setup or drawing failed.
     #[error("terminal error: {0}")]
     Io(#[from] io::Error),
-    /// The session's PTY failed.
+    /// The first session's PTY failed.
     #[error(transparent)]
     Pty(#[from] PtyError),
 }
 
-/// What to run in the session.
+/// What to run, and how.
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    /// Name shown in the session list.
+    /// Name shown in the session list for the first session.
     pub name: String,
-    /// Program to execute.
+    /// Program of the first session.
     pub program: String,
-    /// Arguments passed to the program.
+    /// Arguments of the first session.
     pub args: Vec<String>,
-    /// Working directory of the session.
+    /// Working directory of the first session.
     pub cwd: PathBuf,
+    /// Program for sessions started with `n`.
+    pub shell: String,
+    /// Whether to show desktop notifications.
+    pub notifications: bool,
+}
+
+/// Everything the event loop reacts to, funnelled into one channel.
+enum AppEvent {
+    Input(TermEvent),
+    Output(SessionId, Vec<u8>),
+    Agent(Event),
+    AgentsProbed(Vec<AgentInfo>),
+    Tick,
 }
 
 /// Run the TUI until the user quits. Restores the terminal on exit.
@@ -50,271 +61,270 @@ pub async fn run(config: RunConfig) -> Result<(), TuiError> {
     // Set up IPC before touching the terminal so failures print normally.
     let runtime = RuntimeDir::create()?;
     let endpoint = runtime.endpoint();
-    let mut server = IpcServer::start(&endpoint)?;
+    let server = IpcServer::start(&endpoint)?;
     let mut terminal = ratatui::try_init()?;
-    let result = run_loop(&mut terminal, config, &runtime, &endpoint, &mut server).await;
+    let result = run_loop(&mut terminal, config, runtime, endpoint, server).await;
     ratatui::restore();
     result
 }
 
-/// Arguments and environment that make `program` report to Sakshi.
-///
-/// Fails open: if the adapter cannot prepare its hooks, the agent still runs,
-/// just without live state.
-fn launch_plan(
-    program: &str,
-    user_args: Vec<String>,
-    session_id: SessionId,
-    runtime: &RuntimeDir,
-    endpoint: &Endpoint,
-) -> (AgentKind, Vec<String>, Vec<(String, String)>) {
-    let env = vec![
-        (SESSION_ENV.to_string(), session_id.to_string()),
-        (ENDPOINT_ENV.to_string(), endpoint.to_string()),
-    ];
-    let Some(adapter) = sakshi_adapters::for_program(program) else {
-        return (AgentKind::Generic, user_args, env);
-    };
-    let prefix = std::env::current_exe()
-        .and_then(|hook_exe| {
-            adapter.launch_args(&LaunchContext {
-                hook_exe: &hook_exe,
-                runtime_dir: runtime.path(),
+/// Starts sessions: knows the IPC endpoint and where to send their output.
+struct Launcher {
+    runtime: RuntimeDir,
+    endpoint: Endpoint,
+    events: mpsc::UnboundedSender<AppEvent>,
+}
+
+impl Launcher {
+    /// Arguments and environment that make `program` report to Sakshi.
+    ///
+    /// Fails open: if the adapter cannot prepare its hooks, the agent still
+    /// runs, just without live state.
+    fn plan(
+        &self,
+        program: &str,
+        user_args: Vec<String>,
+        id: SessionId,
+    ) -> (AgentKind, Vec<String>, Vec<(String, String)>) {
+        let env = vec![
+            (SESSION_ENV.to_string(), id.to_string()),
+            (ENDPOINT_ENV.to_string(), self.endpoint.to_string()),
+        ];
+        let Some(adapter) = sakshi_adapters::for_program(program) else {
+            return (AgentKind::Generic, user_args, env);
+        };
+        let prefix = std::env::current_exe()
+            .and_then(|hook_exe| {
+                adapter.launch_args(&LaunchContext {
+                    hook_exe: &hook_exe,
+                    runtime_dir: self.runtime.path(),
+                })
             })
-        })
-        .unwrap_or_else(|e| {
-            tracing::warn!("could not set up {} hooks: {e}", adapter.display_name());
-            Vec::new()
+            .unwrap_or_else(|e| {
+                tracing::warn!("could not set up {} hooks: {e}", adapter.display_name());
+                Vec::new()
+            });
+        let args = prefix.into_iter().chain(user_args).collect();
+        (adapter.kind(), args, env)
+    }
+
+    /// Start a session and begin forwarding its output.
+    fn spawn(
+        &self,
+        name: String,
+        program: String,
+        args: Vec<String>,
+        cwd: PathBuf,
+        size: TermSize,
+    ) -> Result<Pane, PtyError> {
+        let id = SessionId::generate();
+        let (kind, args, env) = self.plan(&program, args, id);
+        let (pty, output) = PtySession::spawn(SpawnConfig {
+            program,
+            args,
+            cwd: Some(cwd.clone()),
+            env,
+            size,
+        })?;
+        self.forward_output(id, output);
+        let session = Session::new(id, name, kind, cwd);
+        Ok(Pane::new(session, Box::new(pty), size))
+    }
+
+    fn forward_output(&self, id: SessionId, mut output: OutputReceiver) {
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            while let Some(bytes) = output.recv().await {
+                if events.send(AppEvent::Output(id, bytes)).is_err() {
+                    return;
+                }
+            }
         });
-    let args = prefix.into_iter().chain(user_args).collect();
-    (adapter.kind(), args, env)
+    }
 }
 
-struct App {
-    session: Session,
-    pty: PtySession,
-    emulator: Box<dyn TerminalEmulator>,
-    exit: Option<ExitInfo>,
-}
-
-enum Flow {
-    Continue,
-    Quit,
+fn pty_size_of(terminal: &DefaultTerminal) -> io::Result<TermSize> {
+    let screen = terminal.size()?;
+    Ok(layout::pty_size(Rect::new(
+        0,
+        0,
+        screen.width,
+        screen.height,
+    )))
 }
 
 async fn run_loop(
     terminal: &mut DefaultTerminal,
     config: RunConfig,
-    runtime: &RuntimeDir,
-    endpoint: &Endpoint,
-    server: &mut IpcServer,
+    runtime: RuntimeDir,
+    endpoint: Endpoint,
+    mut server: IpcServer,
 ) -> Result<(), TuiError> {
-    let screen = terminal.size()?;
-    let size = layout::pty_size(Rect::new(0, 0, screen.width, screen.height));
-
-    let session_id = SessionId::generate();
-    let (kind, args, env) =
-        launch_plan(&config.program, config.args, session_id, runtime, endpoint);
-    let (pty, mut pty_rx) = PtySession::spawn(SpawnConfig {
-        program: config.program,
-        args,
-        cwd: Some(config.cwd.clone()),
-        env,
-        size,
-    })?;
-    let mut app = App {
-        session: Session::new(session_id, config.name, kind, config.cwd),
-        pty,
-        emulator: Box::new(Vt100Emulator::new(size)),
-        exit: None,
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let launcher = Launcher {
+        runtime,
+        endpoint,
+        events: tx.clone(),
     };
 
     // crossterm's reader blocks, so it gets its own thread. The thread ends
     // when the process does; it cannot be interrupted while waiting for input.
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let input_tx = tx.clone();
     thread::Builder::new()
         .name("sakshi-input".into())
         .spawn(move || {
             while let Ok(ev) = event::read() {
-                if event_tx.send(ev).is_err() {
+                if input_tx.send(AppEvent::Input(ev)).is_err() {
                     break;
                 }
             }
         })?;
 
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
-    let mut output_open = true;
-    let mut ipc_open = true;
+    let ipc_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = server.recv().await {
+            if ipc_tx.send(AppEvent::Agent(ev)).is_err() {
+                return;
+            }
+        }
+    });
+
+    let tick_tx = tx.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tick.tick().await;
+            if tick_tx.send(AppEvent::Tick).is_err() {
+                return;
+            }
+        }
+    });
+
+    // Probing runs the agents' `--version`, so it must not block the UI.
+    let probe_tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = probe_tx.send(AppEvent::AgentsProbed(probe_agents()));
+    });
+
+    let notifier: Box<dyn Notifier> = if config.notifications {
+        Box::new(DesktopNotifier)
+    } else {
+        Box::new(NoopNotifier)
+    };
+    let size = pty_size_of(terminal)?;
+    let mut ws = Workspace::new(size, Vec::new(), notifier);
+
+    let name = ws.unique_name(&config.name);
+    let first = launcher.spawn(name, config.program, config.args, config.cwd.clone(), size)?;
+    ws.add_pane(first, true);
 
     loop {
-        terminal.draw(|frame| draw(frame, &app))?;
-
-        tokio::select! {
-            ev = event_rx.recv() => match ev {
-                Some(ev) => {
-                    if let Flow::Quit = app.handle_event(ev) {
-                        break;
-                    }
-                }
-                None => break,
-            },
-            out = pty_rx.recv(), if output_open => match out {
-                Some(bytes) => {
-                    app.feed(&bytes);
-                    // Coalesce whatever else is already queued into one redraw.
-                    while let Ok(more) = pty_rx.try_recv() {
-                        app.feed(&more);
-                    }
-                }
-                None => output_open = false,
-            },
-            ev = server.recv(), if ipc_open => match ev {
-                Some(ev) => {
-                    app.session.apply(&ev);
-                }
-                None => ipc_open = false,
-            },
-            _ = tick.tick() => app.poll_exit()?,
+        terminal.draw(|frame| ui::draw(frame, &ws))?;
+        let Some(first) = rx.recv().await else { break };
+        let mut quit = handle(&mut ws, &launcher, &config.shell, first);
+        // Coalesce whatever else is already queued into one redraw.
+        while !quit {
+            match rx.try_recv() {
+                Ok(next) => quit = handle(&mut ws, &launcher, &config.shell, next),
+                Err(_) => break,
+            }
+        }
+        if quit {
+            break;
         }
     }
 
-    app.pty.kill()?;
+    ws.kill_all();
     Ok(())
 }
 
-impl App {
-    /// Feed child output to the emulator and send back any answers it owes.
-    fn feed(&mut self, bytes: &[u8]) {
-        self.emulator.process(bytes);
-        let replies = self.emulator.take_replies();
-        if !replies.is_empty() {
-            // A failed write means the child is gone; `poll_exit` reports that.
-            let _ = self.pty.write(&replies);
-        }
-    }
-
-    fn handle_event(&mut self, ev: Event) -> Flow {
-        match ev {
-            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                self.handle_key(key)
-            }
-            Event::Resize(width, height) => {
-                let size = layout::pty_size(Rect::new(0, 0, width, height));
-                self.emulator.resize(size);
-                // A failed resize means the child is gone; `poll_exit` reports that.
-                let _ = self.pty.resize(size);
-                Flow::Continue
-            }
-            _ => Flow::Continue,
-        }
-    }
-
-    fn handle_key(&mut self, key: KeyEvent) -> Flow {
-        let quit_chord =
-            key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
-        if quit_chord || self.exit.is_some() {
-            return Flow::Quit;
-        }
-        if let Some(bytes) = keys::encode_key(key, self.emulator.application_cursor()) {
-            // A failed write means the child is gone; `poll_exit` reports that.
-            let _ = self.pty.write(&bytes);
-        }
-        Flow::Continue
-    }
-
-    fn poll_exit(&mut self) -> Result<(), TuiError> {
-        if self.exit.is_none() {
-            if let Some(info) = self.pty.try_wait()? {
-                self.session.finish(info.success);
-                self.exit = Some(info);
-            }
-        }
-        Ok(())
-    }
+/// Installed agents the user can start from the list.
+fn probe_agents() -> Vec<AgentInfo> {
+    sakshi_adapters::available()
+        .iter()
+        .filter_map(|adapter| {
+            let program = adapter.default_program();
+            Some(AgentInfo {
+                name: adapter.display_name().to_string(),
+                program: program.to_string(),
+                key: program.chars().next()?.to_ascii_lowercase(),
+            })
+        })
+        .collect()
 }
 
-fn draw(frame: &mut Frame, app: &App) {
-    let regions = layout::regions(frame.area());
-
-    let session_line = Line::from(format!("{} {}", app.session.state.icon(), app.session.name))
-        .style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_widget(
-        Paragraph::new(session_line).block(Block::bordered().title(" Sessions ")),
-        regions.sidebar,
-    );
-
-    let title = format!(" {} ", app.session.working_dir.display());
-    frame.render_widget(Block::bordered().title(title), regions.terminal);
-    render_terminal(
-        frame.buffer_mut(),
-        regions.terminal_inner,
-        app.emulator.as_ref(),
-    );
-
-    if app.exit.is_none() {
-        if let Some((row, col)) = app.emulator.cursor() {
-            let inner = regions.terminal_inner;
-            if row < inner.height && col < inner.width {
-                frame.set_cursor_position((inner.x + col, inner.y + row));
+/// React to one event. Returns `true` when the app should quit.
+fn handle(ws: &mut Workspace, launcher: &Launcher, shell: &str, ev: AppEvent) -> bool {
+    match ev {
+        AppEvent::Input(TermEvent::Key(key))
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+        {
+            match ws.handle_key(key) {
+                Outcome::Continue => {}
+                Outcome::Quit => return true,
+                Outcome::Spawn(what) => start_session(ws, launcher, shell, what),
             }
         }
+        AppEvent::Input(TermEvent::Resize(width, height)) => {
+            ws.resize(layout::pty_size(Rect::new(0, 0, width, height)));
+        }
+        AppEvent::Input(_) => {}
+        AppEvent::Output(id, bytes) => ws.handle_output(id, &bytes),
+        AppEvent::Agent(event) => ws.handle_event(&event),
+        AppEvent::AgentsProbed(agents) => ws.agents = agents,
+        AppEvent::Tick => ws.poll_exits(),
     }
+    false
+}
 
-    let hint = match app.exit {
-        Some(info) => format!(
-            " Process exited with code {} - press any key to close",
-            info.code
-        ),
-        None => " Ctrl+Q quit".to_string(),
+/// Start a new session from the list. A failure becomes a footer notice, not
+/// a crash: the other sessions must keep running.
+fn start_session(ws: &mut Workspace, launcher: &Launcher, shell: &str, what: NewSession) {
+    let cwd = ws
+        .selected_pane()
+        .map(|p| p.session.working_dir.clone())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (program, base) = match what {
+        NewSession::Shell => (shell.to_string(), program_stem(shell)),
+        NewSession::Agent(program) => {
+            let base = program_stem(&program);
+            (program, base)
+        }
     };
-    frame.render_widget(
-        Paragraph::new(hint).style(Style::default().add_modifier(Modifier::DIM)),
-        regions.footer,
-    );
+    let name = ws.unique_name(&base);
+    match launcher.spawn(name, program.clone(), Vec::new(), cwd, ws.size) {
+        Ok(pane) => ws.add_pane(pane, true),
+        Err(e) => ws.notice = Some(format!("Could not start {program}: {e}")),
+    }
 }
 
-/// Paint the emulator's screen into `area` of `buf`.
-fn render_terminal(buf: &mut Buffer, area: Rect, emulator: &dyn TerminalEmulator) {
-    for row in 0..area.height {
-        for col in 0..area.width {
-            let Some(cell) = emulator.cell(row, col) else {
-                continue;
-            };
-            // The empty right half of a wide character is covered by its left half.
-            if cell.symbol.is_empty() {
-                continue;
-            }
-            buf[(area.x + col, area.y + row)]
-                .set_symbol(&cell.symbol)
-                .set_style(cell.style);
-        }
-    }
+fn program_stem(program: &str) -> String {
+    std::path::Path::new(program)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
-    use sakshi_pty::TermSize;
 
     #[test]
-    fn render_terminal_paints_text_and_style() {
-        let mut emu = Vt100Emulator::new(TermSize { rows: 3, cols: 10 });
-        emu.process(b"\x1b[32mok\x1b[0m");
-        let area = Rect::new(2, 1, 10, 3);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 6));
-        render_terminal(&mut buf, area, &emu);
-        assert_eq!(buf[(2, 1)].symbol(), "o");
-        assert_eq!(buf[(3, 1)].symbol(), "k");
-        assert_eq!(buf[(2, 1)].fg, Color::Indexed(2));
-        // Outside the pane stays untouched.
-        assert_eq!(buf[(0, 0)].symbol(), " ");
+    fn program_stem_drops_directory_and_extension() {
+        assert_eq!(program_stem("/usr/bin/zsh"), "zsh");
+        assert_eq!(program_stem("powershell.exe"), "powershell");
+        assert_eq!(program_stem("claude"), "claude");
     }
 
     #[test]
-    fn render_terminal_tolerates_area_larger_than_screen() {
-        let emu = Vt100Emulator::new(TermSize { rows: 2, cols: 4 });
-        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
-        render_terminal(&mut buf, Rect::new(0, 0, 10, 10), &emu);
+    fn probing_yields_keys_from_program_names() {
+        // Whatever is installed, every offered agent has a lowercase key.
+        for agent in probe_agents() {
+            assert_eq!(
+                agent.key,
+                agent.program.chars().next().unwrap().to_ascii_lowercase()
+            );
+        }
     }
 }
