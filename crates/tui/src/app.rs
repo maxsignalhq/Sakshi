@@ -12,7 +12,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use sakshi_core::{AgentKind, Session, SessionId, SessionState};
+use sakshi_adapters::LaunchContext;
+use sakshi_core::{AgentKind, Session, SessionId};
+use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
 use sakshi_pty::{ExitInfo, PtyError, PtySession, SpawnConfig};
 use tokio::sync::mpsc;
 
@@ -45,10 +47,47 @@ pub struct RunConfig {
 
 /// Run the TUI until the user quits. Restores the terminal on exit.
 pub async fn run(config: RunConfig) -> Result<(), TuiError> {
+    // Set up IPC before touching the terminal so failures print normally.
+    let runtime = RuntimeDir::create()?;
+    let endpoint = runtime.endpoint();
+    let mut server = IpcServer::start(&endpoint)?;
     let mut terminal = ratatui::try_init()?;
-    let result = run_loop(&mut terminal, config).await;
+    let result = run_loop(&mut terminal, config, &runtime, &endpoint, &mut server).await;
     ratatui::restore();
     result
+}
+
+/// Arguments and environment that make `program` report to Sakshi.
+///
+/// Fails open: if the adapter cannot prepare its hooks, the agent still runs,
+/// just without live state.
+fn launch_plan(
+    program: &str,
+    user_args: Vec<String>,
+    session_id: SessionId,
+    runtime: &RuntimeDir,
+    endpoint: &Endpoint,
+) -> (AgentKind, Vec<String>, Vec<(String, String)>) {
+    let env = vec![
+        (SESSION_ENV.to_string(), session_id.to_string()),
+        (ENDPOINT_ENV.to_string(), endpoint.to_string()),
+    ];
+    let Some(adapter) = sakshi_adapters::for_program(program) else {
+        return (AgentKind::Generic, user_args, env);
+    };
+    let prefix = std::env::current_exe()
+        .and_then(|hook_exe| {
+            adapter.launch_args(&LaunchContext {
+                hook_exe: &hook_exe,
+                runtime_dir: runtime.path(),
+            })
+        })
+        .unwrap_or_else(|e| {
+            tracing::warn!("could not set up {} hooks: {e}", adapter.display_name());
+            Vec::new()
+        });
+    let args = prefix.into_iter().chain(user_args).collect();
+    (adapter.kind(), args, env)
 }
 
 struct App {
@@ -63,18 +102,28 @@ enum Flow {
     Quit,
 }
 
-async fn run_loop(terminal: &mut DefaultTerminal, config: RunConfig) -> Result<(), TuiError> {
+async fn run_loop(
+    terminal: &mut DefaultTerminal,
+    config: RunConfig,
+    runtime: &RuntimeDir,
+    endpoint: &Endpoint,
+    server: &mut IpcServer,
+) -> Result<(), TuiError> {
     let screen = terminal.size()?;
     let size = layout::pty_size(Rect::new(0, 0, screen.width, screen.height));
 
+    let session_id = SessionId::generate();
+    let (kind, args, env) =
+        launch_plan(&config.program, config.args, session_id, runtime, endpoint);
     let (pty, mut pty_rx) = PtySession::spawn(SpawnConfig {
         program: config.program,
-        args: config.args,
+        args,
         cwd: Some(config.cwd.clone()),
+        env,
         size,
     })?;
     let mut app = App {
-        session: Session::new(SessionId(1), config.name, AgentKind::Generic, config.cwd),
+        session: Session::new(session_id, config.name, kind, config.cwd),
         pty,
         emulator: Box::new(Vt100Emulator::new(size)),
         exit: None,
@@ -95,6 +144,7 @@ async fn run_loop(terminal: &mut DefaultTerminal, config: RunConfig) -> Result<(
 
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut output_open = true;
+    let mut ipc_open = true;
 
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -117,6 +167,12 @@ async fn run_loop(terminal: &mut DefaultTerminal, config: RunConfig) -> Result<(
                     }
                 }
                 None => output_open = false,
+            },
+            ev = server.recv(), if ipc_open => match ev {
+                Some(ev) => {
+                    app.session.apply(&ev);
+                }
+                None => ipc_open = false,
             },
             _ = tick.tick() => app.poll_exit()?,
         }
@@ -169,11 +225,7 @@ impl App {
     fn poll_exit(&mut self) -> Result<(), TuiError> {
         if self.exit.is_none() {
             if let Some(info) = self.pty.try_wait()? {
-                self.session.state = if info.success {
-                    SessionState::Done
-                } else {
-                    SessionState::Error
-                };
+                self.session.finish(info.success);
                 self.exit = Some(info);
             }
         }

@@ -1,0 +1,17 @@
+[package]
+name = "sakshi-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sakshi-core = { path = "../core" }
+serde_json = "1"
+thiserror = "2.0.21"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio = { version = "1.53.3", features = ["net", "io-util", "rt", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[lints]
+workspace = true
