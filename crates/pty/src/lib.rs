@@ -56,6 +56,8 @@ pub struct SpawnConfig {
     pub args: Vec<String>,
     /// Working directory; the current directory when `None`.
     pub cwd: Option<PathBuf>,
+    /// Extra environment variables for the child, on top of the inherited ones.
+    pub env: Vec<(String, String)>,
     /// Initial size.
     pub size: TermSize,
 }
@@ -93,6 +95,9 @@ impl PtySession {
         cmd.args(&config.args);
         if let Some(cwd) = &config.cwd {
             cmd.cwd(cwd);
+        }
+        for (key, value) in &config.env {
+            cmd.env(key, value);
         }
         let child = pair.slave.spawn_command(cmd).map_err(pty_err)?;
         // Close our copy of the slave so reads see EOF when the child exits.
@@ -176,6 +181,7 @@ mod tests {
             program: program.into(),
             args,
             cwd: None,
+            env: Vec::new(),
             size: TermSize { rows: 24, cols: 80 },
         }
     }
@@ -214,6 +220,46 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert_eq!(exit.map(|e| e.success), Some(true));
+    }
+
+    #[tokio::test]
+    async fn spawn_passes_environment_to_the_child() {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec!["/C".to_string(), "echo %SAKSHI_PROBE%".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec!["-c".to_string(), "echo $SAKSHI_PROBE".to_string()],
+        );
+        let cfg = SpawnConfig {
+            program: program.into(),
+            args,
+            cwd: None,
+            env: vec![("SAKSHI_PROBE".into(), "env-ok-42".into())],
+            size: TermSize { rows: 24, cols: 80 },
+        };
+        let (mut session, mut rx) = PtySession::spawn(cfg).expect("spawn");
+        let mut out = Vec::new();
+        let mut answered = false;
+        let collect = async {
+            while let Some(chunk) = rx.recv().await {
+                out.extend_from_slice(&chunk);
+                if !answered && out.windows(4).any(|w| w == b"\x1b[6n") {
+                    session.write(b"\x1b[1;1R").expect("answer dsr");
+                    answered = true;
+                }
+                if String::from_utf8_lossy(&out).contains("env-ok-42") {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), collect)
+            .await
+            .expect("timed out waiting for output");
+        assert!(String::from_utf8_lossy(&out).contains("env-ok-42"));
     }
 
     #[test]

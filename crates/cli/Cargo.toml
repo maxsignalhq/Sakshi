@@ -9,8 +9,18 @@ description = "The witness for your AI coding agents"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.5.61", features = ["derive"] }
+directories = "6"
+sakshi-adapters = { path = "../adapters" }
+sakshi-core = { path = "../core" }
+sakshi-ipc = { path = "../ipc" }
 sakshi-tui = { path = "../tui" }
+serde_json = "1"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.3", features = ["rt", "macros", "time"] }
 
 [lints]
 workspace = true

@@ -1,18 +1,42 @@
 //! `sakshi` binary entry point.
 
-use std::path::Path;
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use anyhow::{Context, Result};
-use clap::Parser;
+mod hook;
+mod logging;
+
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
 use sakshi_tui::RunConfig;
 
 /// The witness for your AI coding agents.
 #[derive(Debug, Parser)]
-#[command(name = "sakshi", version, about)]
+#[command(
+    name = "sakshi",
+    version,
+    about,
+    args_conflicts_with_subcommands = true
+)]
 struct Cli {
+    #[command(subcommand)]
+    subcommand: Option<Sub>,
+
     /// Program to run, with its arguments. Defaults to your shell.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Sub {
+    /// Internal: called by an agent's hooks to report to a running sakshi.
+    #[command(hide = true)]
+    Hook {
+        /// Which agent is calling, e.g. `claude`.
+        agent: String,
+    },
 }
 
 #[cfg(windows)]
@@ -26,7 +50,7 @@ fn default_shell() -> String {
 }
 
 /// Turn the command line into what the TUI should run.
-fn run_config(command: Vec<String>, cwd: std::path::PathBuf) -> RunConfig {
+fn run_config(command: Vec<String>, cwd: PathBuf) -> RunConfig {
     let mut parts = command.into_iter();
     let program = parts.next().unwrap_or_else(default_shell);
     let name = Path::new(&program)
@@ -44,6 +68,16 @@ fn run_config(command: Vec<String>, cwd: std::path::PathBuf) -> RunConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Sub::Hook { agent }) = cli.subcommand {
+        // Hooks must never fail, print, or start a UI.
+        hook::run(&agent).await;
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        bail!("sakshi needs an interactive terminal");
+    }
+    logging::init();
     let cwd = std::env::current_dir().context("cannot determine the current directory")?;
     sakshi_tui::run(run_config(cli.command, cwd))
         .await
@@ -53,7 +87,6 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn explicit_command_is_split_into_program_and_args() {
@@ -71,5 +104,16 @@ mod tests {
         let cfg = run_config(Vec::new(), PathBuf::from("."));
         assert_eq!(cfg.program, default_shell());
         assert!(cfg.args.is_empty());
+    }
+
+    #[test]
+    fn parses_hook_subcommand_and_plain_commands() {
+        let cli = Cli::try_parse_from(["sakshi", "hook", "claude"]).unwrap();
+        assert!(matches!(cli.subcommand, Some(Sub::Hook { ref agent }) if agent == "claude"));
+        let cli = Cli::try_parse_from(["sakshi", "claude", "--resume"]).unwrap();
+        assert!(cli.subcommand.is_none());
+        assert_eq!(cli.command, ["claude", "--resume"]);
+        let cli = Cli::try_parse_from(["sakshi"]).unwrap();
+        assert!(cli.subcommand.is_none() && cli.command.is_empty());
     }
 }
