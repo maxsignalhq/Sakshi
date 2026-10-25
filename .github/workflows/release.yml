@@ -83,7 +83,8 @@ jobs:
         shell: pwsh
         run: |
           $name = "${{ steps.name.outputs.name }}"
-          Copy-Item "target/${{ matrix.target }}/release/sakshi.exe", "LICENSE", "README.md" -Destination .
+          # LICENSE and README.md are already here; only the binary needs copying.
+          Copy-Item "target/${{ matrix.target }}/release/sakshi.exe" -Destination .
           Compress-Archive -Path sakshi.exe, LICENSE, README.md -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
