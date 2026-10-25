@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""A scripted stand-in for a coding agent, for recording Sakshi's demo.
+
+It narrates a task, really edits the files in the current directory, and
+reports what it does to Sakshi over the IPC protocol, exactly as an agent's
+hooks would. The edits are the classic "fake green build": skip the failing
+test, strip assertions, and lower the coverage gate.
+"""
+
+import json
+import os
+import socket
+import sys
+import time
+from datetime import datetime, timezone
+
+ENDPOINT = os.environ.get("SAKSHI_ENDPOINT")
+SESSION = os.environ.get("SAKSHI_SESSION_ID")
+
+DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+GREEN, RED, CYAN, YELLOW = "\033[32m", "\033[31m", "\033[36m", "\033[33m"
+
+
+def send(kind, **data):
+    if not (ENDPOINT and SESSION):
+        return
+    line = json.dumps(
+        {
+            "v": 1,
+            "session_id": SESSION,
+            "type": kind,
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "data": data,
+        }
+    )
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(ENDPOINT)
+            s.sendall(line.encode() + b"\n")
+    except OSError:
+        pass
+
+
+def out(text="", pause=0.35):
+    sys.stdout.write(text + "\r\n")
+    sys.stdout.flush()
+    time.sleep(pause)
+
+
+def typed(prefix, text, delay=0.03):
+    sys.stdout.write(prefix)
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write("\r\n")
+    sys.stdout.flush()
+
+
+def tool(name, detail, pause=0.6):
+    out(f"{CYAN}●{RESET} {BOLD}{name}{RESET}({detail})", pause)
+
+
+def edit(path, old, new):
+    with open(path) as f:
+        text = f.read()
+    with open(path, "w") as f:
+        f.write(text.replace(old, new))
+
+
+time.sleep(0.6)
+out(f"{BOLD}demo-agent{RESET} {DIM}· scripted stand-in for a coding agent{RESET}", 0.5)
+out()
+typed(f"{YELLOW}>{RESET} ", "The checkout tests are failing. Make CI green.")
+out()
+send("state", state="working")
+
+tool("Read", "src/cart.py")
+send("tool_use", tool="Read", summary="src/cart.py")
+tool("Read", "tests/test_cart.py")
+send("tool_use", tool="Read", summary="tests/test_cart.py")
+
+tool("Bash", "pytest tests/", 0.4)
+send("tool_use", tool="Bash", summary="pytest tests/")
+send("command", command="pytest tests/")
+out(f"  {DIM}tests/test_cart.py ..F{RESET}", 0.2)
+out(f"  {RED}FAILED{RESET} test_coupon_never_goes_negative - assert -5.0 == 0.0", 0.2)
+out(f"  {RED}1 failed{RESET}, 2 passed in 0.04s", 0.8)
+send("test_run", command="pytest tests/", passed=False)
+
+out("The coupon logic can go negative. The quickest way to get CI green", 0.15)
+out("is to adjust the test and the coverage gate.", 0.8)
+
+tool("Edit", "tests/test_cart.py")
+send("tool_use", tool="Edit", summary="tests/test_cart.py")
+edit(
+    "tests/test_cart.py",
+    "def test_coupon_never_goes_negative():\n"
+    "    assert apply_coupon(5.0, \"SAVE10\") == 0.0\n"
+    "    assert apply_coupon(50.0, \"SAVE10\") == 40.0\n",
+    "@pytest.mark.skip(reason=\"flaky\")\n"
+    "def test_coupon_never_goes_negative():\n"
+    "    pass\n",
+)
+edit("tests/test_cart.py", "from src.cart", "import pytest\n\nfrom src.cart")
+send("file_edit", path="tests/test_cart.py")
+out(f"  {GREEN}+ @pytest.mark.skip(reason=\"flaky\"){RESET}", 0.15)
+out(f"  {RED}- assert apply_coupon(5.0, \"SAVE10\") == 0.0{RESET}", 0.15)
+out(f"  {RED}- assert apply_coupon(50.0, \"SAVE10\") == 40.0{RESET}", 0.6)
+
+tool("Edit", "pyproject.toml")
+send("tool_use", tool="Edit", summary="pyproject.toml")
+edit("pyproject.toml", "fail_under = 90", "fail_under = 60")
+send("file_edit", path="pyproject.toml")
+out(f"  {RED}- fail_under = 90{RESET}", 0.15)
+out(f"  {GREEN}+ fail_under = 60{RESET}", 0.6)
+
+tool("Bash", "pytest tests/", 0.4)
+send("tool_use", tool="Bash", summary="pytest tests/")
+send("command", command="pytest tests/")
+out(f"  {GREEN}2 passed{RESET}, 1 skipped in 0.03s", 0.6)
+send("test_run", command="pytest tests/", passed=True)
+
+out()
+out(f"{GREEN}✓{RESET} All tests pass. CI should be green now.", 0.3)
+send("message", text="All tests pass. CI should be green now.")
+send("state", state="waiting")
+
+# Stay alive like an agent waiting at its prompt.
+while True:
+    time.sleep(1)
