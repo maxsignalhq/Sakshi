@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag like v0.1.0 builds every platform, then publishes a GitHub
-# release with the archives, SHA256SUMS and rendered package manifests.
+# release with the archives, SHA256SUMS and rendered package manifests, then
+# pushes the Homebrew formula and Scoop manifest to their own repositories.
 # Pull requests that touch this file or packaging/ run the build and package
 # steps only, so changes here are tested without publishing anything.
 on:
@@ -166,3 +167,84 @@ jobs:
             fi
           done
           exit $missing
+
+  # Pushes the freshly rendered Homebrew formula and Scoop manifest to their
+  # own repositories. It runs after the release exists, as a separate job, so a
+  # failure here never undoes or blocks the release itself; re-run the job (or
+  # follow docs/RELEASING.md by hand) to retry. It needs a secret named
+  # PACKAGE_REPOS_TOKEN: a fine-grained token with Contents read/write on
+  # maxsignalhq/homebrew-tap and maxsignalhq/scoop-bucket only. Without the
+  # secret the job reports that and succeeds, leaving the manual steps.
+  package-repos:
+    name: update tap and bucket
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_REPOS_TOKEN: ${{ secrets.PACKAGE_REPOS_TOKEN }}
+    steps:
+      - name: Check for the token
+        id: token
+        run: |
+          if [ -z "$PACKAGE_REPOS_TOKEN" ]; then
+            echo "::notice::PACKAGE_REPOS_TOKEN is not set; skipping the tap and bucket update. Follow docs/RELEASING.md section 3 by hand."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the rendered manifests from the release
+        if: steps.token.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern package-manifests.zip
+          unzip -q package-manifests.zip
+          test -f manifests/homebrew/sakshi.rb
+          test -f manifests/scoop/sakshi.json
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          repository: maxsignalhq/homebrew-tap
+          token: ${{ secrets.PACKAGE_REPOS_TOKEN }}
+          path: tap
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
+        with:
+          repository: maxsignalhq/scoop-bucket
+          token: ${{ secrets.PACKAGE_REPOS_TOKEN }}
+          path: bucket
+
+      - name: Update the Homebrew tap
+        if: steps.token.outputs.present == 'true'
+        run: |
+          mkdir -p tap/Formula
+          cp manifests/homebrew/sakshi.rb tap/Formula/sakshi.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/sakshi.rb
+          if git diff --cached --quiet; then
+            echo "tap already up to date"
+          else
+            git commit -m "sakshi ${GITHUB_REF_NAME#v}"
+            git push origin HEAD
+          fi
+
+      - name: Update the Scoop bucket
+        if: steps.token.outputs.present == 'true'
+        run: |
+          mkdir -p bucket/bucket
+          cp manifests/scoop/sakshi.json bucket/bucket/sakshi.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/sakshi.json
+          if git diff --cached --quiet; then
+            echo "bucket already up to date"
+          else
+            git commit -m "sakshi ${GITHUB_REF_NAME#v}"
+            git push origin HEAD
+          fi
