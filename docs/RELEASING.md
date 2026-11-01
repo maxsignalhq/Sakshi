@@ -1,8 +1,9 @@
 # Releasing Sakshi
 
 A release is cut by pushing a version tag. CI does the building and packaging;
-the last step, getting the package managers to pick it up, is done by a
-maintainer because it publishes to other people's repositories.
+the Homebrew tap and Scoop bucket are updated automatically once the release
+exists (see section 3). Only winget is left to a maintainer, because it is a
+pull request to Microsoft's repository.
 
 ## 1. Prepare
 
@@ -45,8 +46,25 @@ release), fix the problem, and tag again.
 
 ## 3. Publish to package managers
 
-Download `package-manifests.zip` from the release. Each of these is a separate
-repository, so each needs someone with access to it.
+### Automatic: Homebrew tap and Scoop bucket
+
+After the release is created, the `update tap and bucket` job in the release
+workflow downloads `package-manifests.zip` from it and pushes
+`homebrew/sakshi.rb` to `maxsignalhq/homebrew-tap` (`Formula/sakshi.rb`) and
+`scoop/sakshi.json` to `maxsignalhq/scoop-bucket` (`bucket/sakshi.json`). It
+is a separate job, so if it fails the release is unaffected: re-run the job.
+
+**One-time setup.** Create a fine-grained personal access token with
+*Contents: Read and write* on those two repositories only, and save it as the
+Actions secret `PACKAGE_REPOS_TOKEN` in the Sakshi repository. Without the
+secret the job reports a notice and succeeds without pushing anything, and you
+publish by hand as below. Rotate the token before it expires.
+
+### By hand
+
+Use this if the job is skipped or fails. Download `package-manifests.zip` from
+the release. Each of these is a separate repository, so each needs someone with
+access to it.
 
 **Homebrew.** Put `homebrew/sakshi.rb` at `Formula/sakshi.rb` in a tap
 repository (conventionally `maxsignalhq/homebrew-tap`). Users then run
@@ -68,5 +86,6 @@ users get a `sakshi` command with `winget install MaxSignalHQ.Sakshi`.
 
 ## What is not automated, and why
 
-Pushing the tag, and every step in section 3, publish something under the
-project's name. They are left to a person on purpose.
+Pushing the tag publishes a release, so a person does it on purpose. The tap
+and bucket update follows from the tag automatically, using the scoped token
+above. The winget pull request stays manual.
