@@ -5,6 +5,12 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
+### Added
+- Install with Homebrew (`brew install maxsignalhq/tap/sakshi`) or Scoop (`maxsignalhq/scoop-bucket`).
+
+### Fixed
+- The generated Homebrew formula now passes `brew audit --strict --new`.
+
 ## [0.1.0] - 2026-10-24
 
 First usable version.

@@ -37,7 +37,7 @@ class RenderTests(unittest.TestCase):
     def test_a_v_prefix_on_the_version_is_ignored(self):
         out = render.render("v1.2.3", fake_sums())
         self.assertNotIn("vv1.2.3", out["homebrew/sakshi.rb"])
-        self.assertIn('version "1.2.3"', out["homebrew/sakshi.rb"])
+        self.assertIn("v1.2.3/", out["homebrew/sakshi.rb"])
 
     def test_scoop_manifest_is_valid_json_with_the_windows_checksum(self):
         out = render.render("1.2.3", fake_sums())

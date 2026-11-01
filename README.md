@@ -15,7 +15,20 @@ Running agents is easy. Knowing what they did is not. Sakshi watches each sessio
 
 ## Install
 
-**macOS and Linux:**
+**Homebrew (macOS and Linux):**
+
+```sh
+brew install maxsignalhq/tap/sakshi
+```
+
+**Scoop (Windows):**
+
+```powershell
+scoop bucket add maxsignalhq https://github.com/maxsignalhq/scoop-bucket
+scoop install sakshi
+```
+
+**macOS and Linux, install script:**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxsignalhq/Sakshi/main/install.sh | sh
@@ -39,7 +52,7 @@ Both scripts download the build for your machine from the latest GitHub release,
 cargo install --git https://github.com/maxsignalhq/Sakshi sakshi
 ```
 
-Homebrew, Scoop and winget manifests are kept in [packaging/](packaging/). Publishing them is a manual step, described in [docs/RELEASING.md](docs/RELEASING.md); until that is done, use the archives or `cargo install`.
+The Homebrew, Scoop and winget manifests are generated from templates in [packaging/](packaging/). The winget package is not published yet. Publishing a release to the package managers is a manual step, described in [docs/RELEASING.md](docs/RELEASING.md).
 
 Optional: `git` on your `PATH` enables change tracking, and desktop notifications use your OS's own notification service.
 

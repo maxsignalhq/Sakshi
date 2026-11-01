@@ -1,7 +1,6 @@
 class Sakshi < Formula
-  desc "The witness for your AI coding agents"
+  desc "Witness for your AI coding agents"
   homepage "https://github.com/maxsignalhq/Sakshi"
-  version "@@VERSION@@"
   license "MIT"
 
   on_macos do
