@@ -164,15 +164,10 @@ pub fn add_worktree(dir: &Path, tag: &str) -> io::Result<Worktree> {
     let branch = format!("sakshi/{tag}");
     let path_arg = path.to_string_lossy().into_owned();
     git(&repo, &["worktree", "add", "-q", "-b", &branch, &path_arg])?;
-    // `dir` may reach the repository through a symlink (`/var` on macOS), which
-    // git has already resolved; try both spellings before giving up on the
-    // sub-folder.
-    let canonical = dir.canonicalize().ok();
-    let rest = dir
-        .strip_prefix(&repo)
-        .ok()
-        .or_else(|| canonical.as_deref()?.strip_prefix(&repo).ok());
-    let cwd = rest.map_or_else(|| path.clone(), |rest| path.join(rest));
+    // Ask git for the sub-folder instead of comparing paths, which differ in
+    // spelling between symlinks (`/var` on macOS) and Windows short names.
+    let prefix = git(dir, &["rev-parse", "--show-prefix"])?;
+    let cwd = path.join(prefix.trim());
     Ok(Worktree {
         repo,
         path,
