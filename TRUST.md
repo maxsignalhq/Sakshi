@@ -40,6 +40,7 @@ them simply do not fire.
 | `sensitive-file` | warn | CI or automation config was touched: `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, `.husky/`, `CODEOWNERS`, ... |
 | `sensitive-file` | warn | Business-critical code was touched: a path with a word like `auth`, `login`, `oauth`, `jwt` (authentication), `payment`, `billing`, `invoice`, `ledger`, `checkout` (payments) or `migration`, `migrate`, `alembic`, `flyway` (database migrations). Whole words only, so `author.rs` is fine; test and doc files are left to the test rules |
 | `sensitive-file` | yours | A path matched a pattern in your [config](#your-own-rules) |
+| `outside-project` | warn | A file outside the session's directory was edited (scratch space like `/tmp` and an agent's own notes are ignored; add a pattern to `ignore_paths` to silence others) |
 | `coverage-lowered` | alert | A coverage threshold went down: `fail_under`, `--cov-fail-under`, `--fail-under-lines`, Jest/nyc/Vitest `coverageThreshold` numbers, codecov `target`, ... |
 | `checks-suppressed` | warn | Lines were added that silence a check instead of fixing it: `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `# noqa`, `# type: ignore`, `#[allow(`, `@SuppressWarnings`, `//nolint`, `istanbul ignore`, ... (doc files are skipped) |
 | `lockfile-changed` | info | A dependency lockfile changed: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, ... |
