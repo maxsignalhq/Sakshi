@@ -5,6 +5,10 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
+### Added
+- `repeated-failure` trust rule: warns when the same test command has failed three
+  times in a row, a sign the agent is stuck.
+
 ### Fixed
 - Codex now reports to Sakshi even when `sakshi` is not on your `PATH` (a build
   run from its folder, a custom install location). Sakshi puts its own folder on

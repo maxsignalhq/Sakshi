@@ -29,12 +29,9 @@ fn run_hook(stdin: &str, session: Option<&str>, endpoint: Option<&Endpoint>) -> 
         cmd.env(ENDPOINT_ENV, e.as_str());
     }
     let mut child = cmd.spawn().unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    // A hook that has nothing to report may exit without reading its input, so
+    // a broken pipe here is fine.
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
     child.wait_with_output().unwrap()
 }
 

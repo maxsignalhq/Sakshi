@@ -220,7 +220,13 @@ pub fn evaluate_with(
         observed.root.as_deref(),
     ));
     findings.extend(destructive_commands(events));
-    findings.extend(tests_failing(events));
+    // A streak of identical failures says more than the single latest failure.
+    let stuck = repeated_failure(events);
+    if stuck.is_empty() {
+        findings.extend(tests_failing(events));
+    } else {
+        findings.extend(stuck);
+    }
     findings.extend(unverified_changes(events));
     if hooks_silent(events, observed) {
         findings.push(Finding::new(
@@ -1288,6 +1294,33 @@ fn tests_failing(events: &[Event]) -> Vec<Finding> {
     }
 }
 
+/// Failed runs of the same test command in a row that make an agent look stuck.
+const STUCK_AFTER_FAILURES: usize = 3;
+
+fn repeated_failure(events: &[Event]) -> Vec<Finding> {
+    let mut runs = events.iter().rev().filter_map(|e| match &e.kind {
+        EventKind::TestRun { command, passed } => Some((command, *passed)),
+        _ => None,
+    });
+    let Some((command, Some(false))) = runs.next() else {
+        return Vec::new();
+    };
+    let streak = 1 + runs
+        .take_while(|(c, passed)| *c == command && *passed == Some(false))
+        .count();
+    if streak < STUCK_AFTER_FAILURES {
+        return Vec::new();
+    }
+    vec![Finding::new(
+        "repeated-failure",
+        Severity::Warn,
+        format!(
+            "the same test run has failed {streak} times in a row, so the agent may be stuck: {}",
+            shorten(command)
+        ),
+    )]
+}
+
 fn unverified_changes(events: &[Event]) -> Vec<Finding> {
     let Some(last_edit) = events
         .iter()
@@ -1816,6 +1849,63 @@ mod tests {
     fn a_later_passing_run_clears_the_failure() {
         let events = [test_run(Some(false)), edit("a.rs"), test_run(Some(true))];
         assert!(evaluate(&events, None).findings.is_empty());
+    }
+
+    fn test_run_of(command: &str, passed: Option<bool>) -> Event {
+        ev(EventKind::TestRun {
+            command: command.into(),
+            passed,
+        })
+    }
+
+    #[test]
+    fn three_identical_failures_in_a_row_look_stuck() {
+        let events = [
+            test_run(Some(false)),
+            edit("a.rs"),
+            test_run(Some(false)),
+            test_run(Some(false)),
+        ];
+        let report = evaluate(&events, None);
+        let found: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule == "repeated-failure" || f.rule == "tests-failing")
+            .map(|f| f.rule.as_str())
+            .collect();
+        // The streak replaces the plain failure rather than adding to it.
+        assert_eq!(found, ["repeated-failure"]);
+        assert!(report.findings[0].reason.contains("3 times"));
+        assert_eq!(report.badge, Badge::Yellow);
+    }
+
+    #[test]
+    fn two_failures_a_pass_or_a_different_command_are_not_stuck() {
+        let two = [test_run(Some(false)), test_run(Some(false))];
+        assert_eq!(rules(&evaluate(&two, None)), ["tests-failing"]);
+
+        let healed = [
+            test_run(Some(false)),
+            test_run(Some(false)),
+            test_run(Some(true)),
+            test_run(Some(false)),
+        ];
+        assert_eq!(rules(&evaluate(&healed, None)), ["tests-failing"]);
+
+        let varied = [
+            test_run_of("cargo test a", Some(false)),
+            test_run_of("cargo test b", Some(false)),
+            test_run_of("cargo test a", Some(false)),
+        ];
+        assert_eq!(rules(&evaluate(&varied, None)), ["tests-failing"]);
+
+        let unknown = [
+            test_run(Some(false)),
+            test_run(None),
+            test_run(Some(false)),
+            test_run(Some(false)),
+        ];
+        assert_eq!(rules(&evaluate(&unknown, None)), ["tests-failing"]);
     }
 
     #[test]
