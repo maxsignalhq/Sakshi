@@ -5,10 +5,6 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
-### Fixed
-- Trust evaluation no longer panics on a file path containing non-ASCII
-  characters that lies outside the session directory (#17).
-
 ## [0.2.0] - 2026-11-01
 
 ### Added
