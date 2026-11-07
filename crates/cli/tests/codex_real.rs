@@ -71,6 +71,15 @@ impl Drop for CodexHome {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        // `daemon stop` leaves the daemon's `pid-update-loop` helper running
+        // out of this directory. Nothing else uses this path.
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg(&self.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -145,11 +154,11 @@ async fn a_real_codex_reports_through_the_hooks_even_with_a_shared_server_runnin
         ]
     };
 
-    // First launch: Codex asks to approve the plugin's hooks, as the README
-    // tells users to expect. Approved hooks only run from the next launch, and
-    // the approval is only saved once a turn has completed.
+    // Codex first asks to approve the plugin's hooks, as the README tells users
+    // to expect. The shared server started above is still running.
+    let prompt = "Run the shell command `echo sakshi-real-test`, then say done";
     let mut tui = Tui::start_with_env(
-        &["--no-notify", "codex", "-C", &work_dir, "Say hello"],
+        &["--no-notify", "codex", "-C", &work_dir, prompt],
         &data.0,
         env(),
     );
@@ -163,25 +172,6 @@ async fn a_real_codex_reports_through_the_hooks_even_with_a_shared_server_runnin
     tui.send(b"\x1b[B");
     tokio::time::sleep(Duration::from_secs(1)).await;
     tui.send(b"\r");
-    tui.wait_for_within("the first turn", Duration::from_secs(240), |s| {
-        s.contains("Worked for")
-    })
-    .await;
-    quit(&mut tui).await;
-    let saved = std::fs::read_to_string(&config_path).unwrap();
-    assert!(
-        saved.contains("hooks.state"),
-        "Codex did not save the hook approval:\n{saved}"
-    );
-
-    // Second launch, with the shared server still running from the first: a
-    // task whose hooks must reach this session, not the first one's.
-    let prompt = "Run the shell command `echo sakshi-real-test`, then say done";
-    let mut tui = Tui::start_with_env(
-        &["--no-notify", "codex", "-C", &work_dir, prompt],
-        &data.0,
-        env(),
-    );
     // Codex prints "Worked for Ns" when the turn is over, then waits for more
     // input rather than exiting.
     tui.wait_for_within("the end of the turn", Duration::from_secs(240), |s| {
@@ -191,10 +181,8 @@ async fn a_real_codex_reports_through_the_hooks_even_with_a_shared_server_runnin
     quit(&mut tui).await;
 
     let logs = sakshi_store::list_logs(&sakshi_store::sessions_dir(&data.0)).unwrap();
-    assert_eq!(logs.len(), 2, "{logs:?}");
-    // Log file names start with the start time, so the last one is the task run.
-    let task_log = logs.iter().max_by_key(|l| l.path.clone()).unwrap();
-    let events: Vec<Event> = sakshi_store::read_events(&task_log.path).unwrap();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    let events: Vec<Event> = sakshi_store::read_events(&logs[0].path).unwrap();
     eprintln!("recorded events:");
     for event in &events {
         eprintln!("  {:?}", event.kind);

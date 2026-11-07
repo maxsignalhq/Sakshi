@@ -463,16 +463,6 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    fn launch(program: &str, user_args: &[String]) -> Vec<String> {
-        let ctx = LaunchContext {
-            hook_exe: Path::new("sakshi"),
-            runtime_dir: Path::new("."),
-            program,
-            user_args,
-        };
-        CodexAdapter.launch_args(&ctx).unwrap()
-    }
-
     #[test]
     fn uses_its_own_start_key() {
         assert_eq!(CodexAdapter.start_key(), 'o');
@@ -483,39 +473,67 @@ mod tests {
     // `--no-daemon` keeps the session's own server, which they do see.
     #[test]
     fn runs_codex_without_the_shared_server() {
-        assert_eq!(launch("true", &[]), args(&["--no-daemon"]));
-    }
-
-    #[test]
-    fn adds_nothing_when_codex_does_not_know_the_flag() {
-        // `false` stands in for a Codex that rejects an unknown flag.
-        assert!(launch("false", &[]).is_empty());
-    }
-
-    #[test]
-    fn adds_nothing_when_codex_cannot_be_run() {
-        assert!(launch("sakshi-no-such-program-x", &[]).is_empty());
-    }
-
-    // Codex refuses `--no-daemon` given twice, which would stop it starting.
-    #[test]
-    fn does_not_repeat_a_flag_the_user_gave() {
-        assert!(launch("true", &args(&["--no-daemon"])).is_empty());
-        assert!(launch("true", &args(&["resume", "--no-daemon"])).is_empty());
-    }
-
-    // With --remote the hooks run on the remote server, out of reach either way.
-    #[test]
-    fn leaves_remote_sessions_alone() {
-        assert!(launch("true", &args(&["--remote", "unix://"])).is_empty());
-        assert!(launch("true", &args(&["--remote=ws://h:1"])).is_empty());
+        assert_eq!(launch_flags(&[], || true), args(&["--no-daemon"]));
     }
 
     #[test]
     fn passes_other_arguments_through_unchanged() {
         assert_eq!(
-            launch("true", &args(&["resume", "--last"])),
+            launch_flags(&args(&["resume", "--last"]), || true),
             args(&["--no-daemon"])
         );
+    }
+
+    #[test]
+    fn adds_nothing_when_codex_does_not_know_the_flag() {
+        assert!(launch_flags(&[], || false).is_empty());
+    }
+
+    // Codex refuses `--no-daemon` given twice, which would stop it starting.
+    #[test]
+    fn does_not_repeat_a_flag_the_user_gave() {
+        for user in [args(&["--no-daemon"]), args(&["resume", "--no-daemon"])] {
+            assert!(launch_flags(&user, || panic!("should not probe")).is_empty());
+        }
+    }
+
+    // With --remote the hooks run on the remote server, out of reach either way.
+    #[test]
+    fn leaves_remote_sessions_alone() {
+        for user in [args(&["--remote", "unix://"]), args(&["--remote=ws://h:1"])] {
+            assert!(launch_flags(&user, || panic!("should not probe")).is_empty());
+        }
+    }
+
+    // These run a real program, so they only make sense where `true` and
+    // `false` exist. They exit 0 / 1 whatever they are given.
+    #[cfg(unix)]
+    mod probing {
+        use super::*;
+
+        fn launch(program: &str, user_args: &[String]) -> Vec<String> {
+            let ctx = LaunchContext {
+                hook_exe: Path::new("sakshi"),
+                runtime_dir: Path::new("."),
+                program,
+                user_args,
+            };
+            CodexAdapter.launch_args(&ctx).unwrap()
+        }
+
+        #[test]
+        fn a_program_that_accepts_the_flag_gets_it() {
+            assert_eq!(launch("true", &[]), args(&["--no-daemon"]));
+        }
+
+        #[test]
+        fn a_program_that_rejects_the_flag_gets_nothing() {
+            assert!(launch("false", &[]).is_empty());
+        }
+
+        #[test]
+        fn a_program_that_cannot_be_run_gets_nothing() {
+            assert!(launch("sakshi-no-such-program-x", &[]).is_empty());
+        }
     }
 }
