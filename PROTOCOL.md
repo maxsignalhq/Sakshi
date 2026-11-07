@@ -112,8 +112,10 @@ The plugin routes `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
 `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop` and `Interrupt` to
 `sakshi hook codex`. The command does nothing unless `SAKSHI_ENDPOINT` is set
 (only Sakshi sets it) and `sakshi` is on your path, and it always exits 0, so
-Codex outside Sakshi is unaffected. Codex runs hooks through a login shell, so
-`sakshi` must be on that shell's `PATH`.
+Codex outside Sakshi is unaffected. The command finds `sakshi` by name, so
+Sakshi puts the folder of the running `sakshi` first on the `PATH` it gives
+Codex (unless that folder is already on it). A shell setup that overrides
+`PATH` for hooks would defeat this.
 
 By default Codex runs hooks inside a shared background app server that keeps
 the environment it was first started with, so a session's hooks would never see

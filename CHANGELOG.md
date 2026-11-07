@@ -5,6 +5,11 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
+### Fixed
+- Codex now reports to Sakshi even when `sakshi` is not on your `PATH` (a build
+  run from its folder, a custom install location). Sakshi puts its own folder on
+  the `PATH` it gives Codex.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

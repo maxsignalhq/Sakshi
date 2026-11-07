@@ -20,7 +20,7 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -84,14 +84,6 @@ impl Drop for CodexHome {
     }
 }
 
-/// `PATH` with the directory of the `sakshi` under test first: the plugin's
-/// hooks look `sakshi` up there.
-fn path_with_sakshi() -> String {
-    let dir = Path::new(&sakshi_bin()).parent().unwrap().to_path_buf();
-    let existing = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{existing}", dir.display())
-}
-
 /// Detach from the running session and quit, which kills it.
 async fn quit(tui: &mut Tui) {
     tui.send(b"\x1d");
@@ -145,13 +137,10 @@ async fn a_real_codex_reports_through_the_hooks_even_with_a_shared_server_runnin
     .unwrap();
     let work_dir = work.to_string_lossy().into_owned();
     let env = || {
-        vec![
-            (
-                "CODEX_HOME".to_string(),
-                home.0.to_string_lossy().into_owned(),
-            ),
-            ("PATH".to_string(), path_with_sakshi()),
-        ]
+        vec![(
+            "CODEX_HOME".to_string(),
+            home.0.to_string_lossy().into_owned(),
+        )]
     };
 
     // Codex first asks to approve the plugin's hooks, as the README tells users
