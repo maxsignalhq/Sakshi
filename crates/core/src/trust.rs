@@ -212,6 +212,7 @@ pub fn evaluate_with(
         findings.extend(coverage_lowered(diff));
         findings.extend(checks_suppressed(diff));
         findings.extend(lockfiles_changed(diff));
+        findings.extend(manifests_changed(diff));
     }
     findings.extend(sensitive_files(
         events,
@@ -842,6 +843,47 @@ fn lockfiles_changed(diff: &Diff) -> Vec<Finding> {
         "pubspec.lock",
         "mix.lock",
     ];
+    changed_files(
+        diff,
+        |name| LOCKFILES.contains(&name),
+        "lockfile-changed",
+        "dependency lockfile changed",
+    )
+}
+
+fn manifests_changed(diff: &Diff) -> Vec<Finding> {
+    const MANIFESTS: &[&str] = &[
+        "cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "pipfile",
+        "go.mod",
+        "gemfile",
+        "composer.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "mix.exs",
+        "pubspec.yaml",
+    ];
+    changed_files(
+        diff,
+        |name| {
+            MANIFESTS.contains(&name)
+                || (name.starts_with("requirements") && name.ends_with(".txt"))
+        },
+        "manifest-changed",
+        "dependency manifest changed",
+    )
+}
+
+/// An info finding listing the changed files whose lowercase name satisfies `is_match`.
+fn changed_files(
+    diff: &Diff,
+    is_match: impl Fn(&str) -> bool,
+    rule: &str,
+    what: &str,
+) -> Vec<Finding> {
     let changed: Vec<&str> = diff
         .files
         .iter()
@@ -851,7 +893,7 @@ fn lockfiles_changed(diff: &Diff) -> Vec<Finding> {
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            LOCKFILES.contains(&name.as_str())
+            is_match(&name)
         })
         .map(|f| f.path.as_str())
         .collect();
@@ -868,9 +910,9 @@ fn lockfiles_changed(diff: &Diff) -> Vec<Finding> {
         list.push_str(&format!(" and {} more", changed.len() - 3));
     }
     vec![Finding::new(
-        "lockfile-changed",
+        rule,
         Severity::Info,
-        format!("dependency lockfile changed ({list}); check what was added or upgraded"),
+        format!("{what} ({list}); check what was added or upgraded"),
     )]
 }
 
@@ -2185,6 +2227,26 @@ mod tests {
         assert_eq!(rules(&report), ["lockfile-changed"]);
         assert_eq!(report.badge, Badge::Green);
         assert!(report.findings[0].reason.contains("web/package-lock.json"));
+    }
+
+    #[test]
+    fn manifest_changes_are_info_and_other_files_are_not_manifests() {
+        let d = diff(vec![
+            file("Cargo.toml", ChangeKind::Modified, &["x"], &[]),
+            file("web/package.json", ChangeKind::Modified, &["x"], &[]),
+            file("requirements-dev.txt", ChangeKind::Added, &["x"], &[]),
+            file("src/lib.rs", ChangeKind::Modified, &["x"], &[]),
+            file("notes.txt", ChangeKind::Modified, &["x"], &[]),
+        ]);
+        let report = evaluate(&[], Some(&d));
+        assert_eq!(rules(&report), ["manifest-changed"]);
+        assert_eq!(report.badge, Badge::Green);
+        let reason = &report.findings[0].reason;
+        assert!(reason.contains("Cargo.toml") && reason.contains("requirements-dev.txt"));
+        assert!(!reason.contains("notes.txt") && !reason.contains("lib.rs"));
+
+        let none = diff(vec![file("src/main.rs", ChangeKind::Modified, &["x"], &[])]);
+        assert!(evaluate(&[], Some(&none)).findings.is_empty());
     }
 
     // ---- hook silence
