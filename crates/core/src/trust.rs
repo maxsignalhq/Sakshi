@@ -220,6 +220,7 @@ pub fn evaluate_with(
         config,
         observed.root.as_deref(),
     ));
+    findings.extend(outside_project(events, config, observed.root.as_deref()));
     findings.extend(destructive_commands(events));
     // A streak of identical failures says more than the single latest failure.
     let stuck = repeated_failure(events);
@@ -958,6 +959,65 @@ fn sensitive_files(
         }
     }
     out
+}
+
+/// Whether `path` (already normalised) is absolute on Unix or Windows.
+fn is_absolute(path: &str) -> bool {
+    let b = path.as_bytes();
+    path.starts_with('/')
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/')
+}
+
+/// Places an agent routinely writes outside the project: scratch space and
+/// its own notes and plans. Matched in lowercase.
+fn routine_outside_path(lower: &str) -> bool {
+    const TEMP: &[&str] = &["/tmp/", "/var/folders/", "/appdata/local/temp/"];
+    const AGENT_STATE: &[&str] = &[
+        "/.claude/projects/",
+        "/.claude/plans/",
+        "/.claude/todos/",
+        "/.codex/memories/",
+    ];
+    TEMP.iter().chain(AGENT_STATE).any(|m| lower.contains(m))
+}
+
+fn outside_project(events: &[Event], config: &TrustConfig, root: Option<&str>) -> Vec<Finding> {
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    let mut outside: Vec<String> = Vec::new();
+    for event in events {
+        let EventKind::FileEdit { path } = &event.kind else {
+            continue;
+        };
+        let path = normalize(path);
+        if !is_absolute(&path)
+            || relative_to(&path, Some(root)) != path
+            || routine_outside_path(&path.to_ascii_lowercase())
+            || config.ignore_paths.iter().any(|p| glob_match(p, &path))
+            || outside.contains(&path)
+        {
+            continue;
+        }
+        outside.push(path);
+    }
+    if outside.is_empty() {
+        return Vec::new();
+    }
+    let mut list = outside
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if outside.len() > 3 {
+        list.push_str(&format!(" and {} more", outside.len() - 3));
+    }
+    vec![Finding::new(
+        "outside-project",
+        Severity::Warn,
+        format!("edited files outside the session directory: {list}"),
+    )]
 }
 
 fn shorten(command: &str) -> String {
@@ -2247,6 +2307,73 @@ mod tests {
 
         let none = diff(vec![file("src/main.rs", ChangeKind::Modified, &["x"], &[])]);
         assert!(evaluate(&[], Some(&none)).findings.is_empty());
+    }
+
+    #[test]
+    fn edits_outside_the_session_directory_are_flagged() {
+        let obs = Observations {
+            root: Some("/work/app".into()),
+            ..Observations::default()
+        };
+        let cfg = TrustConfig::default();
+        let run = |paths: &[&str]| {
+            let events: Vec<Event> = paths.iter().map(|p| edit(p)).collect();
+            evaluate_with(&events, None, &cfg, &obs)
+        };
+
+        let report = run(&["/work/app/src/a.rs", "/home/me/.bashrc", "/home/me/.bashrc"]);
+        let outside: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule == "outside-project")
+            .collect();
+        assert_eq!(outside.len(), 1);
+        assert_eq!(outside[0].severity, Severity::Warn);
+        assert!(outside[0].reason.contains("/home/me/.bashrc"));
+        assert!(!outside[0].reason.contains("src/a.rs"));
+
+        // Inside, relative, scratch space and agent notes are all fine.
+        for ok in [
+            "/work/app/src/a.rs",
+            "/WORK/app/a.rs",
+            "src/a.rs",
+            "/tmp/scratch.txt",
+            "/private/var/folders/xy/T/out.txt",
+            "C:/Users/me/AppData/Local/Temp/x.txt",
+            "/home/me/.claude/projects/p/memory/m.md",
+        ] {
+            assert!(
+                !run(&[ok])
+                    .findings
+                    .iter()
+                    .any(|f| f.rule == "outside-project"),
+                "{ok} should not be flagged"
+            );
+        }
+        // A sibling that merely shares a prefix is outside.
+        assert!(run(&["/work/app-other/a.rs"])
+            .findings
+            .iter()
+            .any(|f| f.rule == "outside-project"));
+        // Without a known root there is nothing to compare against.
+        assert!(!evaluate(&[edit("/home/me/.bashrc")], None)
+            .findings
+            .iter()
+            .any(|f| f.rule == "outside-project"));
+    }
+
+    #[test]
+    fn ignored_paths_are_not_reported_as_outside() {
+        let obs = Observations {
+            root: Some("/work/app".into()),
+            ..Observations::default()
+        };
+        let cfg = TrustConfig {
+            ignore_paths: vec!["/home/me/notes/**".into()],
+            ..TrustConfig::default()
+        };
+        let report = evaluate_with(&[edit("/home/me/notes/a.md")], None, &cfg, &obs);
+        assert!(!report.findings.iter().any(|f| f.rule == "outside-project"));
     }
 
     // ---- hook silence

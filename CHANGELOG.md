@@ -6,6 +6,8 @@ All notable changes to Sakshi. The format follows
 ## Unreleased
 
 ### Added
+- `outside-project` trust rule (warn): the agent edited a file outside the directory
+  the session started in.
 - `manifest-changed` trust rule (info): a dependency manifest such as `Cargo.toml` or
   `package.json` changed, so you can check for packages the agent added.
 - `repeated-failure` trust rule: warns when the same test command has failed three
