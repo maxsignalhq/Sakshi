@@ -451,6 +451,8 @@ mod tests {
         let ctx = LaunchContext {
             hook_exe: Path::new("sakshi"),
             runtime_dir: &dir,
+            program: "claude",
+            user_args: &[],
         };
         let args = ClaudeAdapter.launch_args(&ctx).unwrap();
         assert_eq!(args[0], "--settings");

@@ -76,6 +76,7 @@ Sakshi shows a session list on the left and the selected session's terminal besi
 | `Enter`, `l`, `1`-`9` | Attach (the digit jumps straight to that session) |
 | `n` | Start a new shell |
 | `c` | Start Claude Code (shown only when it is installed) |
+| `o` | Start Codex (shown only when it is installed; see [Codex](#codex)) |
 | `PgUp` / `PgDn`, `End` | Scroll the selected session's output back and forward; `End` returns to the live screen |
 | `t` or `Tab` | Show or hide the details panel |
 | `r` | Refresh the change summary |
@@ -86,7 +87,7 @@ Sessions keep running while you are on the list or in another session. They end 
 
 ### What it tells you
 
-- **State** per session: `○` idle, `●` working, `!` needs you, `✓` done, `✗` failed. For Claude Code this is live, from its hooks. Other programs show only running or ended.
+- **State** per session: `○` idle, `●` working, `!` needs you, `✓` done, `✗` failed. For Claude Code and Codex this is live, from their hooks. Other programs show only running or ended.
 - **Notifications** when a session you are not looking at needs you, finishes or fails, or turns red. `--no-notify` turns them off.
 - **Trust badge** (a coloured dot): green, yellow or red, with plain-English reasons in the details panel. See [TRUST.md](TRUST.md) for every rule.
 - **While you were away**: re-attach to a session that did things while you were gone and Sakshi summarises them first.
@@ -114,6 +115,16 @@ ignore_paths = ["fixtures/**"]
 
 [TRUST.md](TRUST.md#your-own-rules) has the details and where the file lives on each OS.
 
+## Codex
+
+Codex runs only hooks you have approved, so it needs a one-time setup:
+
+```sh
+sakshi setup codex           # asks first, then registers a small plugin via Codex's own CLI
+```
+
+Then start Codex inside Sakshi (`o`, or `sakshi codex`) and, when it says hooks need review, choose **Trust all and continue**. `sakshi setup codex --status` shows whether it worked and `sakshi setup codex --remove` undoes it. The plugin does nothing unless Codex is running inside Sakshi. Without setup Codex still runs here, but shows only running or ended and the session turns yellow with a `hooks-silent` finding. Sakshi starts Codex with `--no-daemon`, so each session has its own app server rather than Codex's shared background one (which would not know which Sakshi session its hooks belong to). The cost: those sessions do not appear in `codex agents` or other clients of the shared server. `sakshi` must be on the `PATH` Codex runs hooks with. Setup is not available on Windows yet. Details are in [PROTOCOL.md](PROTOCOL.md).
+
 ## Claude Code
 
 When Sakshi starts `claude`, it adds `--settings <file>` with hooks that report back to Sakshi. Your own Claude Code settings are never modified, and if Sakshi is not running the hooks do nothing and cannot slow the agent down. If the hooks ever go quiet while Claude Code is clearly busy, the session turns yellow with a `hooks-silent` finding, so you know the badge can't see everything. The details are in [PROTOCOL.md](PROTOCOL.md).
@@ -138,7 +149,7 @@ Logs are readable by your user only (on Unix), and the commands in them have obv
 - On Windows the console reports a paste as a burst of key presses. Sakshi recognises a burst of eight or more characters containing a line break as a paste, so a very short multi-line paste can still be typed line by line.
 - Agents running inside WSL cannot reach Sakshi's Windows pipe, so they show only running or ended. Run Sakshi inside WSL instead, where it behaves as on Linux.
 - Change tracking needs a git repository. Work you had uncommitted before a session started is not blamed on it.
-- Live state exists for Claude Code only. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose, and [docs/ADAPTERS.md](docs/ADAPTERS.md) shows how to add one.
+- Live state exists for Claude Code and Codex. Codex test runs have an unknown pass/fail unless Codex reports an exit code. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose, and [docs/ADAPTERS.md](docs/ADAPTERS.md) shows how to add one.
 
 ## Develop
 

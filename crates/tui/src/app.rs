@@ -118,6 +118,8 @@ impl Launcher {
                 adapter.launch_args(&LaunchContext {
                     hook_exe: &hook_exe,
                     runtime_dir: self.runtime.path(),
+                    program,
+                    user_args: &user_args,
                 })
             })
             .unwrap_or_else(|e| {
@@ -392,13 +394,10 @@ fn start_diffs(ws: &mut Workspace, tx: &mpsc::UnboundedSender<AppEvent>) {
 fn probe_agents() -> Vec<AgentInfo> {
     sakshi_adapters::available()
         .iter()
-        .filter_map(|adapter| {
-            let program = adapter.default_program();
-            Some(AgentInfo {
-                name: adapter.display_name().to_string(),
-                program: program.to_string(),
-                key: program.chars().next()?.to_ascii_lowercase(),
-            })
+        .map(|adapter| AgentInfo {
+            name: adapter.display_name().to_string(),
+            program: adapter.default_program().to_string(),
+            key: adapter.start_key(),
         })
         .collect()
 }
@@ -551,13 +550,25 @@ mod tests {
     }
 
     #[test]
-    fn probing_yields_keys_from_program_names() {
-        // Whatever is installed, every offered agent has a lowercase key.
+    fn every_agent_has_a_unique_lowercase_key_that_is_not_a_reserved_one() {
+        // Keys the session list uses itself; an agent must not shadow them.
+        const RESERVED: [char; 8] = ['n', 'q', 'x', 't', 'j', 'k', 'l', 'r'];
+        // Checked over every adapter, installed or not, so CI sees all of them.
+        let keys: Vec<char> = sakshi_adapters::all()
+            .iter()
+            .map(|a| a.start_key())
+            .collect();
+        for key in &keys {
+            assert!(key.is_ascii_lowercase(), "{key}");
+            assert!(!RESERVED.contains(key), "{key} is reserved");
+        }
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "{keys:?}");
+        // Whatever is installed is offered under its adapter's key.
         for agent in probe_agents() {
-            assert_eq!(
-                agent.key,
-                agent.program.chars().next().unwrap().to_ascii_lowercase()
-            );
+            assert!(keys.contains(&agent.key));
         }
     }
 }

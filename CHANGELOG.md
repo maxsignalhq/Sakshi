@@ -5,8 +5,21 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
+## [0.2.0] - 2026-11-01
+
 ### Added
+- Codex support: live state (working, needs you, done), notifications and the
+  command, file-edit and test trust rules, for Codex running inside Sakshi.
+  Start it with `o` or `sakshi codex`. Codex only runs hooks you have approved,
+  so it needs a one-time `sakshi setup codex` (asks first; `--status` to check,
+  `--remove` to undo) and an approval in Codex. Not available on Windows yet.
+  Sakshi starts Codex with `--no-daemon` (when your Codex supports it), so each
+  session has its own app server and its hooks reach the right session; they
+  would otherwise run in Codex's shared background server and report nothing.
 - Install with Homebrew (`brew install maxsignalhq/tap/sakshi`) or Scoop (`maxsignalhq/scoop-bucket`).
+
+### Changed
+- The `hooks-silent` finding now points Codex users at `sakshi setup codex`.
 
 ### Fixed
 - Trust evaluation no longer panics on a file path containing non-ASCII

@@ -98,3 +98,46 @@ Your own Claude Code settings are not modified.
 | `Notification` | `state waiting` for prompts that need you, and `message` |
 | `Stop` | `state waiting` |
 | `SessionEnd` | `state done` |
+
+## Codex
+
+Codex only runs hooks you have approved, so Sakshi cannot inject them for one
+session as it does for Claude Code. Instead `sakshi setup codex` registers one
+fixed plugin, through Codex's own CLI (`codex plugin marketplace add`,
+`codex plugin add sakshi@sakshi`); `sakshi setup codex --remove` undoes it. You
+then approve its hooks once in Codex ("Trust all and continue"). Until you do,
+Codex skips them without a warning and the session shows `hooks-silent`.
+
+The plugin routes `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop` and `Interrupt` to
+`sakshi hook codex`. The command does nothing unless `SAKSHI_ENDPOINT` is set
+(only Sakshi sets it) and `sakshi` is on your path, and it always exits 0, so
+Codex outside Sakshi is unaffected. Codex runs hooks through a login shell, so
+`sakshi` must be on that shell's `PATH`.
+
+By default Codex runs hooks inside a shared background app server that keeps
+the environment it was first started with, so a session's hooks would never see
+its own `SAKSHI_ENDPOINT` and `SAKSHI_SESSION_ID`. Sakshi therefore starts
+Codex with `--no-daemon`, which gives the session a server of its own, started
+by Sakshi, with Sakshi's environment. It adds the flag only if that Codex
+accepts it, and not when you already passed `--no-daemon` or are connecting to a
+server with `--remote`.
+
+The plugin's files never change between Sakshi releases unless a release note
+says so: Codex ties your approval to their exact contents, and a change asks
+everyone to approve again.
+
+| Hook | Events sent |
+|------|-------------|
+| `SessionStart` | `state idle` |
+| `UserPromptSubmit` | `state working` |
+| `PreToolUse` | `state working`, `tool_use`, plus `command` for shell tools, and `file_edit` for every file an `apply_patch` adds, updates, moves or deletes |
+| `PostToolUse` | `test_run` when a shell command is a recognised test runner. `passed` is set only when the response states an exit code; otherwise it is left unknown |
+| `PermissionRequest` | `state waiting`, `message` |
+| `Stop`, `Interrupt` | `state waiting` |
+| `SessionEnd` | `state done` |
+
+Codex has no notification hook, so "needs you" comes from `PermissionRequest`
+and from a finished or interrupted turn. Setup is not available on Windows yet:
+the hook needs a POSIX shell.
+

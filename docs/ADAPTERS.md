@@ -38,6 +38,8 @@ reports, works for free.
        fn launch_args(&self, ctx: &LaunchContext<'_>) -> io::Result<Vec<String>> {
            // Write a config file into ctx.runtime_dir whose hooks run
            // `<ctx.hook_exe> hook codex`, then return the flag that loads it.
+           // ctx.program and ctx.user_args say what is being launched, for
+           // flags that depend on the agent's version or on what the user passed.
        }
        fn translate_hook(&self, id: SessionId, payload: &Value) -> Vec<Event> {
            // Map the agent's hook JSON to events. Unknown payloads: return vec![].
@@ -61,7 +63,13 @@ reports, works for free.
   after 500 ms; keep the generated config from adding anything that could block.
 - **Never touch the user's own config.** Generate a file in `ctx.runtime_dir` and
   pass it with a flag. If the agent can only read config from a fixed location,
-  open an issue before writing code so we can find another way.
+  open an issue before writing code so we can find another way. The one
+  precedent for an exception is Codex, which runs only hooks the user has
+  approved in its own settings: `sakshi setup codex` is opt-in, asks first,
+  registers one fixed plugin through Codex's own CLI, and `--remove` undoes it.
+  If your agent works like that, copy the shape of `crates/adapters/src/codex.rs`
+  and `codex_plugin.rs`, and keep the registered files byte-for-byte frozen,
+  because the agent re-asks for approval whenever they change.
 - **Report what you know, skip what you don't.** A `test_run` with an unknown
   outcome is better than a guessed one. Use `sakshi_core::is_test_command` to
   recognise test runners.

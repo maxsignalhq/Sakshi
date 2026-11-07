@@ -33,7 +33,7 @@ crates/
 ## Concepts
 - **Session:** id, agent kind, working dir, state (idle | working | waiting | done | error), started_at.
 - **Event:** typed, timestamped (state, tool_use, file_edit, command, test_run, message).
-- **Adapter:** trait per agent; capability-probed at runtime; unavailable agents hidden.
+- **Adapter:** trait per agent; capability-probed at runtime; unavailable agents hidden. Adapters never edit an agent's own config. The one exception is an explicit, opt-in `sakshi setup <agent>` for an agent that only runs hooks the user has approved in its own settings (Codex): it registers one fixed plugin through the agent's own CLI, asks first, and `--remove` undoes it.
 - **Trust engine:** pure functions over events + git diff + observations (hooks expected, terminal output, working dir) → findings with severity and reason → badge (green | yellow | red). Rules are listed in TRUST.md.
 - **Config:** optional `config.toml` (`[trust] sensitive_paths`, `ignore_paths`). Missing file = defaults; invalid file = clear error.
 - **Activity log:** append-only JSONL per session in the app data dir.

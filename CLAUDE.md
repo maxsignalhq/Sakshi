@@ -11,6 +11,7 @@ Read SPEC.md before any work. It is the source of truth for scope, stack, archit
 - Every change must pass: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 - Code must build and behave on macOS, Windows, and Linux. Gate platform code with `cfg` and keep it behind traits.
 - Hooks and adapters fail open: if Sakshi isn't running, agents must be unaffected.
+- Never touch an agent's own config files. The only exception is `sakshi setup <agent>`: explicit, asks first, goes through the agent's own CLI, and is reversible with `--remove`.
 - Nothing leaves the machine: no telemetry, no network calls.
 - If the spec looks wrong, risky, or overbuilt, say so before writing code.
 
@@ -24,6 +25,7 @@ python3 -m unittest discover -s packaging   # package-manifest + installer tests
 - `unwrap_used`/`expect_used` are `deny` and `unsafe_code` is `forbid` workspace-wide. Test code opts out per crate with `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`; integration tests use `#![allow(...)]`.
 - `crates/cli/tests/` are end-to-end: they run the real `sakshi` binary inside a PTY and read its screen through a terminal emulator (`tests/common/mod.rs`). `SAKSHI_TEST_BIN` points them at a different (e.g. released) binary.
 - `tests/claude_real.rs` talks to a real logged-in `claude` and is `#[ignore]`d: `cargo test -p sakshi --test claude_real -- --ignored --nocapture`.
+- `tests/codex_real.rs` does the same for a real logged-in `codex` (Unix only, uses a throwaway `CODEX_HOME`, starts a shared Codex server first): `cargo test -p sakshi --test codex_real -- --ignored --nocapture`.
 - Env vars: `SAKSHI_DATA_DIR` (logs location), `SAKSHI_CONFIG`, `SAKSHI_LOG=debug`. `SAKSHI_ENDPOINT` / `SAKSHI_SESSION_ID` are set by Sakshi for child processes so hooks can call back.
 
 ## Status
@@ -36,7 +38,7 @@ Sakshi runs agents inside PTYs it owns, and learns what they do from two indepen
 
 **Crates.**
 - `core`: session/event model, `EventBus`, trust engine (`trust.rs`, by far the largest file), diff parsing, summaries, reports, secret redaction. Trust evaluation is pure: `evaluate_with(events, diff, config, observations)` returns findings → green/yellow/red badge. `Observations` carry non-event facts (e.g. terminal output volume) used by rules like `hooks-silent`.
-- `adapters`: `AgentAdapter` trait (match program, probe install, `launch_args`, `translate_hook` payload → `Event`s). Only `ClaudeAdapter` exists; `docs/ADAPTERS.md` is the guide for adding one, which also needs an `AgentKind` variant in `core/session.rs`.
+- `adapters`: `AgentAdapter` trait (match program, probe install, `launch_args`, `translate_hook` payload → `Event`s). `ClaudeAdapter` injects hooks per session; `CodexAdapter` relies on a one-time `sakshi setup codex` plugin whose files are frozen (any change re-prompts every user for approval) and launches Codex with `--no-daemon`, because Codex runs hooks in a shared background server that never sees a session's `SAKSHI_*` env; `docs/ADAPTERS.md` is the guide for adding one, which also needs an `AgentKind` variant in `core/session.rs`.
 - `git`: baseline snapshot at session start and diffs against it (this is how "what changed" is blamed on a session). `store`: per-session append-only JSONL logs, data/config dirs, owner-only permissions. Events are redacted (`core::redact`) before being written.
 - `tui`: `workspace.rs` is pure state (keys and events in, "what the caller must do" out; no I/O), `app.rs` is the event loop that does the I/O, `ui.rs` renders. Keep that split.
 - `cli`: clap entry point, config loading, the hidden `hook` subcommand, and the read-only `sessions` / `report` / `replay` commands that work from the stored logs.
