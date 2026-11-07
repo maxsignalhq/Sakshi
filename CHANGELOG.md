@@ -3,7 +3,7 @@
 All notable changes to Sakshi. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## [0.4.0] - 2026-11-07
 
 ### Added
 - `large-change` trust rule: tells you a session changed a lot (25+ files or 1000+ lines,
