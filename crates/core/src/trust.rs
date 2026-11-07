@@ -4,6 +4,7 @@
 //! Nothing here reads files or runs commands. Callers supply the events a
 //! session produced and, if available, the diff of what changed.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
@@ -177,6 +178,41 @@ pub struct Observations {
     /// The session's working directory. Paths under it are matched relative
     /// to it, so a project folder called `payments` does not flag every file.
     pub root: Option<String>,
+    /// Files this session edited that another running session edited too.
+    pub shared_edits: Vec<SharedEdit>,
+}
+
+/// A file two running sessions have both edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedEdit {
+    /// The file, as an absolute `/`-separated path.
+    pub path: String,
+    /// Name of the other session that edited it.
+    pub session: String,
+}
+
+/// The absolute, `/`-separated form of an edited path, or `None` for a
+/// relative one (which cannot be compared between sessions).
+pub fn edited_path(path: &str) -> Option<String> {
+    let path = normalize(path);
+    is_absolute(&path).then_some(path)
+}
+
+/// The files in `mine` that any of the named `peers` also edited.
+pub fn shared_edits(
+    mine: &BTreeSet<String>,
+    peers: &[(&str, &BTreeSet<String>)],
+) -> Vec<SharedEdit> {
+    let mut out = Vec::new();
+    for path in mine {
+        if let Some((name, _)) = peers.iter().find(|(_, theirs)| theirs.contains(path)) {
+            out.push(SharedEdit {
+                path: path.clone(),
+                session: (*name).to_string(),
+            });
+        }
+    }
+    out
 }
 
 /// Seconds of activity without a hook report before `hooks-silent` fires.
@@ -221,6 +257,23 @@ pub fn evaluate_with(
         observed.root.as_deref(),
     ));
     findings.extend(outside_project(events, config, observed.root.as_deref()));
+    if !observed.shared_edits.is_empty() {
+        let mut list = observed
+            .shared_edits
+            .iter()
+            .take(3)
+            .map(|e| format!("{} (also edited by {})", e.path, e.session))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if observed.shared_edits.len() > 3 {
+            list.push_str(&format!(" and {} more", observed.shared_edits.len() - 3));
+        }
+        findings.push(Finding::new(
+            "session-overlap",
+            Severity::Warn,
+            format!("another running session edited the same files, so their changes may collide: {list}"),
+        ));
+    }
     findings.extend(destructive_commands(events));
     // A streak of identical failures says more than the single latest failure.
     let stuck = repeated_failure(events);
@@ -2376,6 +2429,40 @@ mod tests {
         assert!(!report.findings.iter().any(|f| f.rule == "outside-project"));
     }
 
+    #[test]
+    fn shared_edits_pairs_files_with_the_other_session() {
+        let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<BTreeSet<_>>();
+        let mine = set(&["/a/x.rs", "/a/y.rs"]);
+        let theirs = set(&["/a/y.rs", "/a/z.rs"]);
+        let shared = shared_edits(&mine, &[("other", &theirs)]);
+        assert_eq!(
+            shared,
+            [SharedEdit {
+                path: "/a/y.rs".into(),
+                session: "other".into()
+            }]
+        );
+        assert!(shared_edits(&mine, &[]).is_empty());
+        assert_eq!(edited_path("C:\\p\\a.rs").as_deref(), Some("C:/p/a.rs"));
+        assert_eq!(edited_path("src/a.rs"), None);
+    }
+
+    #[test]
+    fn shared_edits_become_a_session_overlap_warning() {
+        let obs = Observations {
+            shared_edits: vec![SharedEdit {
+                path: "/a/y.rs".into(),
+                session: "other".into(),
+            }],
+            ..Observations::default()
+        };
+        let report = evaluate_with(&[], None, &TrustConfig::default(), &obs);
+        assert_eq!(rules(&report), ["session-overlap"]);
+        assert_eq!(report.badge, Badge::Yellow);
+        assert!(report.findings[0].reason.contains("/a/y.rs"));
+        assert!(evaluate(&[], None).findings.is_empty());
+    }
+
     // ---- hook silence
 
     fn busy_claude() -> Observations {
@@ -2384,6 +2471,7 @@ mod tests {
             output_bytes: HOOK_SILENCE_OUTPUT_BYTES,
             running_secs: HOOK_SILENCE_SECS,
             root: None,
+            ..Observations::default()
         }
     }
 

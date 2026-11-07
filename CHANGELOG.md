@@ -6,6 +6,8 @@ All notable changes to Sakshi. The format follows
 ## Unreleased
 
 ### Added
+- `session-overlap` trust rule (warn): two running sessions edited the same file, so
+  their changes may collide.
 - `outside-project` trust rule (warn): the agent edited a file outside the directory
   the session started in.
 - `manifest-changed` trust rule (info): a dependency manifest such as `Cargo.toml` or

@@ -47,6 +47,7 @@ them simply do not fire.
 | `manifest-changed` | info | A dependency manifest changed: `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Gemfile`, ... Look for packages the agent added |
 | `destructive-command` | alert | `git push --force`, `git reset --hard`, `git clean -f`, `rm -rf` of `/`, `~`, `*`, `.` and similar, `DROP TABLE` / `DROP DATABASE`, `dd` onto a device, `mkfs` |
 | `destructive-command` | warn | Other `rm -rf`, `git push --force-with-lease`, `git checkout .`, `git restore .`, `git branch -D`, `chmod -R 777`, piping `curl`/`wget` into a shell, PowerShell `Remove-Item -Recurse -Force`, `rd /s` |
+| `session-overlap` | warn | Another running Sakshi session edited the same file (absolute paths only), so their changes may collide. Clears when either session ends |
 | `tests-failing` | warn | The latest test run failed |
 | `repeated-failure` | warn | The same test command failed 3 or more times in a row (replaces `tests-failing`): the agent may be stuck |
 | `unverified-changes` | info | Files changed and no test run came after the last edit |
