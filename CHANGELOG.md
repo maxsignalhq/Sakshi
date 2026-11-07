@@ -6,6 +6,8 @@ All notable changes to Sakshi. The format follows
 ## Unreleased
 
 ### Added
+- `large-change` trust rule: tells you a session changed a lot (25+ files or 1000+ lines,
+  lockfiles not counted) before you open the diff.
 - `secret-added` trust rule (alert): an added line looks like a real credential or
   private key. It names the file, never the secret.
 

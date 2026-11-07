@@ -249,6 +249,7 @@ pub fn evaluate_with(
         findings.extend(coverage_lowered(diff));
         findings.extend(checks_suppressed(diff));
         findings.extend(secrets_added(diff));
+        findings.extend(large_change(diff));
         findings.extend(lockfiles_changed(diff));
         findings.extend(manifests_changed(diff));
     }
@@ -879,6 +880,65 @@ fn checks_suppressed(diff: &Diff) -> Vec<Finding> {
     out
 }
 
+/// Lowercase file names of dependency lockfiles.
+const LOCKFILES: &[&str] = &[
+    "cargo.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "bun.lock",
+    "poetry.lock",
+    "pipfile.lock",
+    "uv.lock",
+    "gemfile.lock",
+    "go.sum",
+    "composer.lock",
+    "packages.lock.json",
+    "podfile.lock",
+    "pubspec.lock",
+    "mix.lock",
+];
+
+/// Files changed (lockfiles excluded) at which a session counts as a big one.
+const LARGE_FILES: usize = 25;
+/// Lines added plus removed at which a session counts as a big one.
+const LARGE_LINES: usize = 1000;
+/// Twice over, and the finding becomes a warning.
+const HUGE_FACTOR: usize = 3;
+
+fn large_change(diff: &Diff) -> Vec<Finding> {
+    let counted: Vec<_> = diff
+        .files
+        .iter()
+        .filter(|f| {
+            let name = normalize(&f.path)
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            !LOCKFILES.contains(&name.as_str())
+        })
+        .collect();
+    let files = counted.len();
+    let lines: usize = counted
+        .iter()
+        .map(|f| f.added.len() + f.removed.len())
+        .sum();
+    if files < LARGE_FILES && lines < LARGE_LINES {
+        return Vec::new();
+    }
+    let huge = files >= LARGE_FILES * HUGE_FACTOR || lines >= LARGE_LINES * HUGE_FACTOR;
+    vec![Finding::new(
+        "large-change",
+        if huge { Severity::Warn } else { Severity::Info },
+        format!(
+            "a big change: {files} files and about {lines} lines; plan extra time to review it"
+        ),
+    )]
+}
+
 fn secrets_added(diff: &Diff) -> Vec<Finding> {
     let files: Vec<&str> = diff
         .files
@@ -902,25 +962,6 @@ fn secrets_added(diff: &Diff) -> Vec<Finding> {
 }
 
 fn lockfiles_changed(diff: &Diff) -> Vec<Finding> {
-    const LOCKFILES: &[&str] = &[
-        "cargo.lock",
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lockb",
-        "bun.lock",
-        "poetry.lock",
-        "pipfile.lock",
-        "uv.lock",
-        "gemfile.lock",
-        "go.sum",
-        "composer.lock",
-        "packages.lock.json",
-        "podfile.lock",
-        "pubspec.lock",
-        "mix.lock",
-    ];
     changed_files(
         diff,
         |name| LOCKFILES.contains(&name),
@@ -2560,6 +2601,54 @@ mod tests {
             .findings
             .iter()
             .all(|f| f.rule != "secret-added"));
+    }
+
+    fn many_files(n: usize) -> Vec<FileChange> {
+        (0..n)
+            .map(|i| file(&format!("src/f{i}.rs"), ChangeKind::Modified, &["x"], &[]))
+            .collect()
+    }
+
+    #[test]
+    fn big_changes_are_info_and_huge_ones_a_warning() {
+        let report = evaluate(&[], Some(&diff(many_files(LARGE_FILES))));
+        let big: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule == "large-change")
+            .collect();
+        assert_eq!(big.len(), 1);
+        assert_eq!(big[0].severity, Severity::Info);
+        assert!(big[0].reason.contains("25 files"));
+
+        let lines: Vec<String> = (0..LARGE_LINES).map(|i| format!("l{i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let d = diff(vec![file("big.rs", ChangeKind::Added, &refs, &[])]);
+        let report = evaluate(&[], Some(&d));
+        assert_eq!(rules(&report), ["large-change"]);
+        assert_eq!(report.badge, Badge::Green);
+
+        let huge = evaluate(&[], Some(&diff(many_files(LARGE_FILES * HUGE_FACTOR))));
+        let f = huge
+            .findings
+            .iter()
+            .find(|f| f.rule == "large-change")
+            .unwrap();
+        assert_eq!(f.severity, Severity::Warn);
+        assert_eq!(huge.badge, Badge::Yellow);
+    }
+
+    #[test]
+    fn small_changes_and_lockfile_churn_are_not_large() {
+        let small = evaluate(&[], Some(&diff(many_files(LARGE_FILES - 1))));
+        assert!(small.findings.iter().all(|f| f.rule != "large-change"));
+
+        // A lockfile can change thousands of lines without it being a big change.
+        let lines: Vec<String> = (0..5000).map(|i| format!("l{i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let d = diff(vec![file("Cargo.lock", ChangeKind::Modified, &refs, &refs)]);
+        let report = evaluate(&[], Some(&d));
+        assert_eq!(rules(&report), ["lockfile-changed"]);
     }
 
     // ---- hook silence
