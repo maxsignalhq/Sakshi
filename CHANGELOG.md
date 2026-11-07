@@ -3,7 +3,7 @@
 All notable changes to Sakshi. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## [0.3.0] - 2026-11-07
 
 ### Added
 - `sakshi --worktree <agent>`: run the first session in its own git worktree on a new

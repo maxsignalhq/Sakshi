@@ -8,7 +8,7 @@ Sakshi (साक्षी, Sanskrit for "the witness") runs and supervises AI c
 
 <sub>An agent is asked to fix failing tests. It skips the test, deletes the assertions and lowers the coverage gate, then reports "All tests pass". Sakshi turns the session red and says exactly why. (Recorded with a scripted stand-in agent so it is reproducible; see <a href="scripts/demo">scripts/demo</a>.)</sub>
 
-> Status: 0.2, early. It works and is tested on macOS, Linux and Windows, but it is young, and the trust rules are heuristics (see [TRUST.md](TRUST.md)).
+> Status: 0.3, early. It works and is tested on macOS, Linux and Windows, but it is young, and the trust rules are heuristics (see [TRUST.md](TRUST.md)).
 
 ## Why
 Running agents is easy. Knowing what they did is not. Sakshi watches each session and tells you when something looks off: tests skipped or deleted, assertions weakened, sensitive files touched, destructive commands run.
