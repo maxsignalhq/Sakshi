@@ -2,13 +2,13 @@
 
 **The witness for your AI coding agents.**
 
-Sakshi (साक्षी, Sanskrit for "the witness") runs and supervises AI coding agents like Claude Code from one terminal. See what every agent is doing, get notified when one needs you, and know at a glance whether its work can be trusted.
+Sakshi (साक्षी, Sanskrit for "the witness") runs and supervises AI coding agents from one terminal. It supports Claude Code and Codex. See what every agent is doing, get notified when one needs you, and know at a glance whether its work can be trusted.
 
 ![Sakshi watching an agent fake a green build: the agent reports success, Sakshi turns red and lists why](docs/media/demo.gif)
 
 <sub>An agent is asked to fix failing tests. It skips the test, deletes the assertions and lowers the coverage gate, then reports "All tests pass". Sakshi turns the session red and says exactly why. (Recorded with a scripted stand-in agent so it is reproducible; see <a href="scripts/demo">scripts/demo</a>.)</sub>
 
-> Status: 0.1, early. It works and is tested on macOS, Linux and Windows, but it is young, and the trust rules are heuristics (see [TRUST.md](TRUST.md)).
+> Status: 0.2, early. It works and is tested on macOS, Linux and Windows, but it is young, and the trust rules are heuristics (see [TRUST.md](TRUST.md)).
 
 ## Why
 Running agents is easy. Knowing what they did is not. Sakshi watches each session and tells you when something looks off: tests skipped or deleted, assertions weakened, sensitive files touched, destructive commands run.
