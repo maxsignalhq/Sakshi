@@ -10,6 +10,7 @@ use std::str::FromStr;
 
 use crate::diff::{ChangeKind, Diff};
 use crate::event::{Event, EventKind};
+use crate::redact::looks_like_secret;
 
 /// How worrying a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -247,6 +248,7 @@ pub fn evaluate_with(
         findings.extend(trivial_assertions(diff));
         findings.extend(coverage_lowered(diff));
         findings.extend(checks_suppressed(diff));
+        findings.extend(secrets_added(diff));
         findings.extend(lockfiles_changed(diff));
         findings.extend(manifests_changed(diff));
     }
@@ -875,6 +877,28 @@ fn checks_suppressed(diff: &Diff) -> Vec<Finding> {
         }
     }
     out
+}
+
+fn secrets_added(diff: &Diff) -> Vec<Finding> {
+    let files: Vec<&str> = diff
+        .files
+        .iter()
+        .filter(|f| f.added.iter().any(|l| looks_like_secret(l)))
+        .map(|f| f.path.as_str())
+        .collect();
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let mut list = files.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    if files.len() > 3 {
+        list.push_str(&format!(" and {} more", files.len() - 3));
+    }
+    // Name the files, never the secret.
+    vec![Finding::new(
+        "secret-added",
+        Severity::Alert,
+        format!("added lines look like a credential or private key ({list}); do not commit it"),
+    )]
 }
 
 fn lockfiles_changed(diff: &Diff) -> Vec<Finding> {
@@ -2461,6 +2485,81 @@ mod tests {
         assert_eq!(report.badge, Badge::Yellow);
         assert!(report.findings[0].reason.contains("/a/y.rs"));
         assert!(evaluate(&[], None).findings.is_empty());
+    }
+
+    #[test]
+    fn credentials_in_added_lines_are_an_alert_that_never_shows_the_secret() {
+        let key = "ghp_abcdEFGH1234abcdEFGH1234abcdEFGH1234";
+        let d = diff(vec![
+            file(
+                "src/config.py",
+                ChangeKind::Modified,
+                &[&format!("TOKEN = \"{key}\"")],
+                &[],
+            ),
+            file(
+                "deploy/id.pem",
+                ChangeKind::Added,
+                &["-----BEGIN RSA PRIVATE KEY-----"],
+                &[],
+            ),
+            file(
+                "db.rs",
+                ChangeKind::Modified,
+                &["let url = \"postgres://admin:hunter2@db.internal/app\";"],
+                &[],
+            ),
+            file(
+                "aws.txt",
+                ChangeKind::Added,
+                &["id=AKIAABCDEFGHIJKLMNOP"],
+                &[],
+            ),
+        ]);
+        let report = evaluate(&[], Some(&d));
+        let found: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule == "secret-added")
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].severity, Severity::Alert);
+        assert_eq!(report.badge, Badge::Red);
+        let reason = &found[0].reason;
+        assert!(reason.contains("src/config.py") && reason.contains("and 1 more"));
+        assert!(!reason.contains(key) && !reason.contains("hunter2"));
+    }
+
+    #[test]
+    fn ordinary_code_placeholders_and_removed_lines_are_not_secrets() {
+        let d = diff(vec![
+            file(
+                "a.rs",
+                ChangeKind::Modified,
+                &[
+                    "let token = next_token();",
+                    "max_tokens=100",
+                    "let id = \"sk-1\";",
+                    "echo $npm_config_user_agent",
+                    "pipeline = \"sk-learn-pipeline-transformer\"",
+                    "TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                    "api_key = \"sk-ant-YOUR-KEY-GOES-HERE-0000\"",
+                    "see https://example.com/a and https://user@host/x",
+                    "url = \"postgres://user:password@example.com/db\"",
+                ],
+                &[],
+            ),
+            file(
+                "old.env",
+                ChangeKind::Modified,
+                &[],
+                &["TOKEN=ghp_abcdEFGH1234abcdEFGH1234abcdEFGH1234"],
+            ),
+        ]);
+        assert!(evaluate(&[], Some(&d))
+            .findings
+            .iter()
+            .all(|f| f.rule != "secret-added"));
     }
 
     // ---- hook silence

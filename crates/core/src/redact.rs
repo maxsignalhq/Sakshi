@@ -83,6 +83,35 @@ pub fn redact_secrets(text: &str) -> String {
     out
 }
 
+/// Whether a line of code contains something shaped like a real credential:
+/// a well-known token, an AWS key id, a private key header or a password in a
+/// URL. Stricter than masking, because this is used to raise an alert: names
+/// like `token=...` alone do not count, and obvious placeholders are skipped.
+pub fn looks_like_secret(line: &str) -> bool {
+    const PLACEHOLDERS: &[&str] = &["example", "xxxx", "your", "fake", "dummy", "placeholder"];
+    if line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    let placeholder = |s: &str| {
+        let lower = s.to_ascii_lowercase();
+        PLACEHOLDERS.iter().any(|p| lower.contains(p))
+    };
+    let token = line
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-')))
+        .any(|piece| {
+            // Real prefixed tokens are random enough to contain a digit; names
+            // like `npm_config_user_agent` are not credentials.
+            let random = piece.starts_with("AKIA")
+                || piece.starts_with("ASIA")
+                || piece.chars().any(|c| c.is_ascii_digit());
+            is_known_token(piece) && random && !placeholder(piece)
+        });
+    token
+        || line
+            .split_whitespace()
+            .any(|w| mask_url_password(split_quotes(w).1).is_some() && !placeholder(w))
+}
+
 /// Mask one whitespace-free word. `after_flag` says the word before it was a
 /// flag that takes a secret.
 fn redact_word(word: &str, after_flag: bool) -> String {
