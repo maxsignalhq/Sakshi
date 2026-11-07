@@ -123,7 +123,8 @@ its own `SAKSHI_ENDPOINT` and `SAKSHI_SESSION_ID`. Sakshi therefore starts
 Codex with `--no-daemon`, which gives the session a server of its own, started
 by Sakshi, with Sakshi's environment. It adds the flag only if that Codex
 accepts it, and not when you already passed `--no-daemon` or are connecting to a
-server with `--remote`.
+server with `--remote`. A Codex too old to know the flag still starts, without
+live state, and the reason is written to `sakshi.log`.
 
 The plugin's files never change between Sakshi releases unless a release note
 says so: Codex ties your approval to their exact contents, and a change asks
