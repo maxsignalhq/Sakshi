@@ -4,19 +4,16 @@ Ideas that fit Sakshi's job (watch, never act) and keep it light. Nothing here i
 promised; each is small enough to be one pull request. Anything that would make
 Sakshi orchestrate, decide or phone home is out.
 
-## Planned for 0.4.0
+## Shipped in 0.4.0
 
-- **`secret-added` rule (alert).** An added diff line that looks like a real
-  credential (the key shapes `core::redact` already knows). Agents hardcoding keys
-  is a common, costly slip. The finding names the file, never the secret.
-- **`large-change` rule (info, warn when huge).** A session that changed many
-  files or lines. The point is to tell a reviewer "this is a big one" before they
-  open the diff. Thresholds are constants, adjustable in `config.toml` only if
-  people ask.
-- **Session cost in the report, only if cheap.** If the agent's hook payloads
-  already carry token usage, show a total in the session summary and the report.
-  If getting it needs scraping the screen or reading the agent's private files, drop
-  it.
+`secret-added` and `large-change` (see [TRUST.md](../TRUST.md)).
+
+## Dropped
+
+- **Session cost or token totals.** The hook payloads Sakshi receives carry no
+  usage data, so this would mean parsing the agent's private transcript files,
+  which break whenever the agent changes their format. Not worth the weight. Revisit
+  if an agent starts reporting usage in its hooks.
 
 ## Considered and left out
 

@@ -29,7 +29,7 @@ python3 -m unittest discover -s packaging   # package-manifest + installer tests
 - Env vars: `SAKSHI_DATA_DIR` (logs location), `SAKSHI_CONFIG`, `SAKSHI_LOG=debug`. `SAKSHI_ENDPOINT` / `SAKSHI_SESSION_ID` are set by Sakshi for child processes so hooks can call back.
 
 ## Status
-The roadmap in SPEC.md is complete and 0.3.0 is released; the "one phase at a time" rule applies to new work. Behaviour changes must also update TRUST.md (rules), PROTOCOL.md (wire protocol) and the `Unreleased` section of CHANGELOG.md. Every trust rule needs a test for what it catches *and* what it must not flag.
+The roadmap in SPEC.md is complete and 0.4.0 is released; the "one phase at a time" rule applies to new work. Behaviour changes must also update TRUST.md (rules), PROTOCOL.md (wire protocol) and the `Unreleased` section of CHANGELOG.md. Every trust rule needs a test for what it catches *and* what it must not flag.
 
 ## Architecture
 Sakshi runs agents inside PTYs it owns, and learns what they do from two independent sources that the trust engine then cross-checks.
