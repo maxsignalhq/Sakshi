@@ -89,6 +89,7 @@ Sessions keep running while you are on the list or in another session. They end 
 
 - **State** per session: `○` idle, `●` working, `!` needs you, `✓` done, `✗` failed. For Claude Code and Codex this is live, from their hooks. Other programs show only running or ended.
 - **Notifications** when a session you are not looking at needs you, finishes or fails, or turns red. `--no-notify` turns them off.
+- **Isolation, if you want it.** `sakshi --worktree claude` checks out a new branch (`sakshi/<id>`) from `HEAD` into a sibling folder and runs the session there, so parallel agents do not trample each other or your checkout. Uncommitted changes are not carried over. When you quit, Sakshi prints the commands to merge or drop the branch; it never merges or deletes anything itself.
 - **Trust badge** (a coloured dot): green, yellow or red, with plain-English reasons in the details panel. See [TRUST.md](TRUST.md) for every rule.
 - **While you were away**: re-attach to a session that did things while you were gone and Sakshi summarises them first.
 

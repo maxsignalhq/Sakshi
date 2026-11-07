@@ -11,6 +11,7 @@ anyhow = "1.0.104"
 clap = { version = "4.5.61", features = ["derive"] }
 sakshi-adapters = { path = "../adapters" }
 sakshi-core = { path = "../core" }
+sakshi-git = { path = "../git" }
 sakshi-ipc = { path = "../ipc" }
 sakshi-store = { path = "../store" }
 sakshi-tui = { path = "../tui" }

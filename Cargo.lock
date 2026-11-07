@@ -1754,6 +1754,7 @@ dependencies = [
  "clap",
  "sakshi-adapters",
  "sakshi-core",
+ "sakshi-git",
  "sakshi-ipc",
  "sakshi-pty",
  "sakshi-store",

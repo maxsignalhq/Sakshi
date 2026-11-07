@@ -36,6 +36,11 @@ struct Cli {
     #[arg(long)]
     no_log: bool,
 
+    /// Run the first session in its own git worktree on a new branch, so it
+    /// cannot touch your checkout. Nothing is merged or removed for you.
+    #[arg(long)]
+    worktree: bool,
+
     /// Program to run, with its arguments. Defaults to your shell.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
@@ -186,13 +191,22 @@ async fn main() -> Result<()> {
     // Read the config before taking over the terminal so errors print plainly.
     let trust = config::load(sakshi_store::config_path().as_deref())?;
     logging::init();
-    let cwd = std::env::current_dir().context("cannot determine the current directory")?;
+    let mut cwd = std::env::current_dir().context("cannot determine the current directory")?;
+    let worktree = if cli.worktree {
+        let tag = worktree_tag();
+        let wt = sakshi_git::add_worktree(&cwd, &tag)
+            .with_context(|| "cannot create a worktree (needs a git repository with a commit)")?;
+        cwd = wt.cwd.clone();
+        Some(wt)
+    } else {
+        None
+    };
     let data_dir = if cli.no_log {
         None
     } else {
         sakshi_store::data_dir()
     };
-    sakshi_tui::run(run_config(
+    let result = sakshi_tui::run(run_config(
         cli.command,
         cwd,
         !cli.no_notify,
@@ -200,7 +214,35 @@ async fn main() -> Result<()> {
         trust,
     ))
     .await
-    .context("sakshi exited with an error")
+    .context("sakshi exited with an error");
+    if let Some(wt) = &worktree {
+        println!("{}", worktree_notice(wt));
+    }
+    result
+}
+
+/// A short unique suffix for a worktree and its branch.
+fn worktree_tag() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        "{:06x}",
+        (nanos ^ std::process::id().rotate_left(16)) & 0xff_ffff
+    )
+}
+
+/// What to tell the user after a `--worktree` session: where the work is and
+/// how to take it or drop it. Sakshi does neither.
+fn worktree_notice(wt: &sakshi_git::Worktree) -> String {
+    format!(
+        "Worktree kept at {path} on branch {branch}.\n\
+         Take the work:  git -C {repo} merge {branch}\n\
+         Drop it:        git -C {repo} worktree remove --force {path} && git -C {repo} branch -D {branch}",
+        path = wt.path.display(),
+        repo = wt.repo.display(),
+        branch = wt.branch,
+    )
 }
 
 #[cfg(test)]
@@ -253,6 +295,32 @@ mod tests {
         let cli = Cli::try_parse_from(["sakshi", "sessions", "--limit", "3"]).unwrap();
         assert!(matches!(cli.subcommand, Some(Sub::Sessions { limit: 3 })));
         assert!(Cli::try_parse_from(["sakshi", "report", "--format", "xml"]).is_err());
+    }
+
+    #[test]
+    fn worktree_flag_belongs_to_sakshi_only_before_the_program() {
+        let cli = Cli::try_parse_from(["sakshi", "--worktree", "claude"]).unwrap();
+        assert!(cli.worktree);
+        assert_eq!(cli.command, ["claude"]);
+        let cli = Cli::try_parse_from(["sakshi", "claude", "--worktree"]).unwrap();
+        assert!(!cli.worktree);
+        assert_eq!(cli.command, ["claude", "--worktree"]);
+        assert!(!Cli::try_parse_from(["sakshi", "claude"]).unwrap().worktree);
+    }
+
+    #[test]
+    fn the_worktree_notice_names_the_path_branch_and_both_commands() {
+        let wt = sakshi_git::Worktree {
+            repo: PathBuf::from("/w/app"),
+            path: PathBuf::from("/w/app-sakshi-ab12cd"),
+            cwd: PathBuf::from("/w/app-sakshi-ab12cd"),
+            branch: "sakshi/ab12cd".into(),
+        };
+        let text = worktree_notice(&wt);
+        assert!(text.contains("/w/app-sakshi-ab12cd on branch sakshi/ab12cd"));
+        assert!(text.contains("git -C /w/app merge sakshi/ab12cd"));
+        assert!(text.contains("worktree remove"));
+        assert_eq!(worktree_tag().len(), 6);
     }
 
     #[test]
