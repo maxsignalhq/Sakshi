@@ -44,6 +44,7 @@ them simply do not fire.
 | `secret-added` | alert | An added line looks like a real credential: a GitHub, GitLab, Anthropic, OpenAI-style, Slack, npm or Google key, an AWS key id, a private key header, or a password inside a URL. Placeholders such as `xxxx` or `your-key` are ignored, and the finding names the file, never the secret |
 | `coverage-lowered` | alert | A coverage threshold went down: `fail_under`, `--cov-fail-under`, `--fail-under-lines`, Jest/nyc/Vitest `coverageThreshold` numbers, codecov `target`, ... |
 | `checks-suppressed` | warn | Lines were added that silence a check instead of fixing it: `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `# noqa`, `# type: ignore`, `#[allow(`, `@SuppressWarnings`, `//nolint`, `istanbul ignore`, ... (doc files are skipped) |
+| `large-change` | info / warn | The session changed 25 or more files, or 1000 or more lines (lockfiles not counted): a big diff to review. Warn at three times that |
 | `lockfile-changed` | info | A dependency lockfile changed: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, ... |
 | `manifest-changed` | info | A dependency manifest changed: `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Gemfile`, ... Look for packages the agent added |
 | `destructive-command` | alert | `git push --force`, `git reset --hard`, `git clean -f`, `rm -rf` of `/`, `~`, `*`, `.` and similar, `DROP TABLE` / `DROP DATABASE`, `dd` onto a device, `mkfs` |
