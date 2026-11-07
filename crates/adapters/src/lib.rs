@@ -60,6 +60,12 @@ pub trait AgentAdapter: Send + Sync {
     /// Arguments to put before the user's own so the agent reports to Sakshi.
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> io::Result<Vec<String>>;
 
+    /// Extra environment variables for the agent, on top of the inherited ones.
+    /// Most agents need none.
+    fn launch_env(&self, _ctx: &LaunchContext<'_>) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// Translate one hook payload (the JSON the agent gives a hook on stdin)
     /// into events for `session_id`. Unknown payloads yield no events.
     fn translate_hook(&self, session_id: SessionId, payload: &serde_json::Value) -> Vec<Event>;

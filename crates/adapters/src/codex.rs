@@ -13,8 +13,9 @@
 //! server, a child of the process Sakshi started, with Sakshi's environment.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
@@ -70,6 +71,12 @@ impl AgentAdapter for CodexAdapter {
         }))
     }
 
+    fn launch_env(&self, ctx: &LaunchContext<'_>) -> Vec<(String, String)> {
+        path_with_sakshi(ctx.hook_exe, std::env::var_os("PATH"))
+            .into_iter()
+            .collect()
+    }
+
     fn translate_hook(&self, session_id: SessionId, payload: &Value) -> Vec<Event> {
         translate(payload)
             .into_iter()
@@ -95,6 +102,35 @@ fn launch_flags(user_args: &[String], supported: impl FnOnce() -> bool) -> Vec<S
     } else {
         Vec::new()
     }
+}
+
+/// `PATH` with the directory of the running `sakshi` put first, or `None` if
+/// that is not needed or not possible.
+///
+/// The plugin's hook runs `sakshi hook codex` by name, because its files are
+/// frozen and cannot name a path. Without this, a `sakshi` that is not on the
+/// `PATH` Codex runs hooks with (a build run from its folder, a custom install)
+/// would report nothing. Only a binary actually called `sakshi` helps, and a
+/// directory already on `PATH` is left as it is.
+fn path_with_sakshi(hook_exe: &Path, path: Option<OsString>) -> Option<(String, String)> {
+    let named_sakshi = hook_exe
+        .file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("sakshi"));
+    let dir = hook_exe.parent().filter(|d| !d.as_os_str().is_empty())?;
+    if !named_sakshi {
+        return None;
+    }
+    // An empty PATH must stay empty: splitting "" gives one empty entry, which
+    // the shell reads as "the current directory".
+    let existing: Vec<PathBuf> = path
+        .filter(|p| !p.is_empty())
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if existing.iter().any(|p| p == dir) {
+        return None;
+    }
+    let joined = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(existing)).ok()?;
+    Some(("PATH".to_string(), joined.into_string().ok()?))
 }
 
 /// Whether `program` accepts `--no-daemon`, learned by running it once.
@@ -461,6 +497,60 @@ mod tests {
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn path(parts: &[&str]) -> std::ffi::OsString {
+        std::env::join_paths(parts).unwrap()
+    }
+
+    // The plugin's hook finds Sakshi by `PATH` lookup, so a `sakshi` that is
+    // not on Codex's PATH (a dev build, a custom install) would report nothing.
+    #[test]
+    fn puts_the_running_sakshi_on_path() {
+        let got = path_with_sakshi(
+            Path::new("/opt/sakshi/bin/sakshi"),
+            Some(path(&["/usr/bin", "/bin"])),
+        );
+        assert_eq!(
+            got,
+            Some((
+                "PATH".to_string(),
+                path(&["/opt/sakshi/bin", "/usr/bin", "/bin"])
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn leaves_path_alone_when_sakshi_is_already_on_it() {
+        let existing = path(&["/usr/bin", "/opt/sakshi/bin"]);
+        assert_eq!(
+            path_with_sakshi(Path::new("/opt/sakshi/bin/sakshi"), Some(existing)),
+            None
+        );
+    }
+
+    #[test]
+    fn works_when_path_is_not_set() {
+        let got = path_with_sakshi(Path::new("/opt/sakshi/bin/sakshi"), None);
+        assert_eq!(
+            got,
+            Some(("PATH".to_string(), "/opt/sakshi/bin".to_string()))
+        );
+    }
+
+    // The hook runs `sakshi`, so a binary under another name would not help.
+    #[test]
+    fn leaves_path_alone_for_a_binary_not_named_sakshi() {
+        assert_eq!(
+            path_with_sakshi(Path::new("/opt/x/bin/sakshi-test"), Some(path(&["/bin"]))),
+            None
+        );
+        assert_eq!(
+            path_with_sakshi(Path::new("sakshi"), Some(path(&["/bin"]))),
+            None
+        );
     }
 
     #[test]

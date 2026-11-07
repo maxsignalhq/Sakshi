@@ -106,26 +106,30 @@ impl Launcher {
         user_args: Vec<String>,
         id: SessionId,
     ) -> (AgentKind, Vec<String>, Vec<(String, String)>) {
-        let env = vec![
+        let mut env = vec![
             (SESSION_ENV.to_string(), id.to_string()),
             (ENDPOINT_ENV.to_string(), self.endpoint.to_string()),
         ];
         let Some(adapter) = sakshi_adapters::for_program(program) else {
             return (AgentKind::Generic, user_args, env);
         };
-        let prefix = std::env::current_exe()
-            .and_then(|hook_exe| {
-                adapter.launch_args(&LaunchContext {
+        let prefix = match std::env::current_exe() {
+            Ok(hook_exe) => {
+                let ctx = LaunchContext {
                     hook_exe: &hook_exe,
                     runtime_dir: self.runtime.path(),
                     program,
                     user_args: &user_args,
-                })
-            })
-            .unwrap_or_else(|e| {
-                tracing::warn!("could not set up {} hooks: {e}", adapter.display_name());
-                Vec::new()
-            });
+                };
+                env.extend(adapter.launch_env(&ctx));
+                adapter.launch_args(&ctx)
+            }
+            Err(e) => Err(e),
+        }
+        .unwrap_or_else(|e| {
+            tracing::warn!("could not set up {} hooks: {e}", adapter.display_name());
+            Vec::new()
+        });
         let args = prefix.into_iter().chain(user_args).collect();
         (adapter.kind(), args, env)
     }

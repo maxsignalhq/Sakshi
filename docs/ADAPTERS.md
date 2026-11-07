@@ -41,6 +41,8 @@ reports, works for free.
            // ctx.program and ctx.user_args say what is being launched, for
            // flags that depend on the agent's version or on what the user passed.
        }
+       // Optional: `fn launch_env(&self, ctx) -> Vec<(String, String)>` adds
+       // environment variables for the agent (Codex uses it for `PATH`).
        fn translate_hook(&self, id: SessionId, payload: &Value) -> Vec<Event> {
            // Map the agent's hook JSON to events. Unknown payloads: return vec![].
        }
