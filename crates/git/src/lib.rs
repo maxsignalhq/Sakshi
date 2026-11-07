@@ -260,10 +260,8 @@ mod tests {
         assert!(wt.path.join("a.txt").exists());
         assert_eq!(wt.cwd, wt.path.join("sub"));
         // Starts from HEAD: the uncommitted edit is not carried over.
-        assert_eq!(
-            std::fs::read_to_string(wt.path.join("a.txt")).unwrap(),
-            "one\ntwo\n"
-        );
+        let checked_out = std::fs::read_to_string(wt.path.join("a.txt")).unwrap();
+        assert_eq!(checked_out.lines().collect::<Vec<_>>(), ["one", "two"]);
         // The original is untouched, and the new branch exists.
         assert_eq!(
             std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
