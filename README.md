@@ -100,6 +100,7 @@ Every session is recorded to a local log. Afterwards:
 sakshi sessions                      # what ran, newest first, with state and trust
 sakshi report                        # Markdown report of the latest session
 sakshi report 0123abcd --format json # a specific session (any unique prefix of its id), as JSON
+sakshi report --format pr            # a short block to paste into a pull request description
 sakshi replay --speed 10             # replay the timeline at 10x
 ```
 

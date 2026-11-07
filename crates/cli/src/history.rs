@@ -18,8 +18,10 @@ const MAX_REPLAY_PAUSE: Duration = Duration::from_millis(1500);
 /// Output format of `sakshi report`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
-    /// Markdown, for reading and pasting into a PR or an issue.
+    /// Markdown, for reading.
     Md,
+    /// A short Markdown block for a pull request description.
+    Pr,
     /// JSON, for scripts.
     Json,
 }
@@ -112,6 +114,7 @@ pub fn report(dir: &Path, query: &str, format: Format, out: &mut dyn Write) -> R
     };
     let text = match format {
         Format::Md => report.to_markdown(),
+        Format::Pr => report.to_pr_markdown(),
         Format::Json => {
             let mut text = serde_json::to_string_pretty(&report_json(&report))
                 .context("cannot render JSON")?;

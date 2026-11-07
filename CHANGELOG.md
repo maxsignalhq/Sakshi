@@ -6,6 +6,8 @@ All notable changes to Sakshi. The format follows
 ## Unreleased
 
 ### Added
+- `sakshi report --format pr`: a short Markdown block for a pull request description
+  (verdict, findings, tests, files edited) with no local ids or absolute paths.
 - `session-overlap` trust rule (warn): two running sessions edited the same file, so
   their changes may collide.
 - `outside-project` trust rule (warn): the agent edited a file outside the directory
