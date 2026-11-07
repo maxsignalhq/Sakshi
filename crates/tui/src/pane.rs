@@ -1,13 +1,14 @@
 //! One session's runtime state: its PTY, its emulated screen, and what the
 //! trust engine knows about it.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::sync::Arc;
 
 use ratatui::crossterm::event::KeyEvent;
 use sakshi_core::{
-    evaluate_with, hooks_silent, summarize, AgentKind, Diff, Event, EventKind, Observations,
-    Session, SessionState, Summary, TrustConfig, TrustReport,
+    edited_path, evaluate_with, hooks_silent, summarize, AgentKind, Diff, Event, EventKind,
+    Observations, Session, SessionState, SharedEdit, Summary, TrustConfig, TrustReport,
 };
 use sakshi_git::Baseline;
 use sakshi_pty::{ExitInfo, PtyError, PtySession, TermSize};
@@ -99,6 +100,10 @@ pub(crate) struct Pane {
     output_bytes: u64,
     /// Whether the last verdict included silent hooks.
     hooks_were_silent: bool,
+    /// Absolute paths this session has edited, for spotting collisions.
+    pub edited: BTreeSet<String>,
+    /// Files other running sessions have edited too.
+    shared_edits: Vec<SharedEdit>,
     pty: Box<dyn Pty>,
     emulator: Box<dyn TerminalEmulator>,
 }
@@ -120,6 +125,8 @@ impl Pane {
             trust_config: Arc::new(TrustConfig::default()),
             output_bytes: 0,
             hooks_were_silent: false,
+            edited: BTreeSet::new(),
+            shared_edits: Vec::new(),
             pty,
             emulator: Box::new(Vt100Emulator::new(size)),
         }
@@ -226,8 +233,20 @@ impl Pane {
         if self.events.len() >= MAX_EVENTS {
             self.events.drain(..MAX_EVENTS / 10);
         }
+        if let EventKind::FileEdit { path } = &event.kind {
+            self.edited.extend(edited_path(path));
+        }
         self.events.push(event.clone());
         self.trust_stale = true;
+    }
+
+    /// Record which of this session's edited files other running sessions
+    /// edited too; the verdict is recomputed if that changed.
+    pub fn set_shared_edits(&mut self, shared: Vec<SharedEdit>) {
+        if shared != self.shared_edits {
+            self.shared_edits = shared;
+            self.trust_stale = true;
+        }
     }
 
     /// Store a freshly computed diff.
@@ -274,6 +293,7 @@ impl Pane {
             output_bytes: self.output_bytes,
             running_secs,
             root: Some(self.session.working_dir.display().to_string()),
+            shared_edits: self.shared_edits.clone(),
         }
     }
 

@@ -5,12 +5,14 @@
 //! diff). Everything that happens is published on the event bus, which is how
 //! the activity log hears about it.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use sakshi_core::{
-    format_age, Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState, Severity,
+    format_age, shared_edits, Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState,
+    Severity, SharedEdit,
 };
 use sakshi_pty::TermSize;
 use time::OffsetDateTime;
@@ -420,6 +422,25 @@ impl Workspace {
     }
 
     fn refresh_trust(&mut self) {
+        // Two running sessions editing the same file will collide.
+        let shared: Vec<Vec<SharedEdit>> = (0..self.panes.len())
+            .map(|i| {
+                if self.panes[i].exit.is_some() {
+                    return Vec::new();
+                }
+                let peers: Vec<(&str, &BTreeSet<String>)> = self
+                    .panes
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, p)| *j != i && p.exit.is_none())
+                    .map(|(_, p)| (p.session.name.as_str(), &p.edited))
+                    .collect();
+                shared_edits(&self.panes[i].edited, &peers)
+            })
+            .collect();
+        for (pane, shared) in self.panes.iter_mut().zip(shared) {
+            pane.set_shared_edits(shared);
+        }
         for index in 0..self.panes.len() {
             let before = self.panes[index].trust.badge;
             let Some(report) = self.panes[index].refresh_trust().cloned() else {
@@ -1244,6 +1265,60 @@ pub(crate) mod tests {
         f.ws.tick();
         assert_eq!(f.ws.panes[0].trust.badge, Badge::Red);
         assert!(f.notes.0.lock().unwrap().is_empty());
+    }
+
+    fn edit_event(id: u64, path: &str) -> Event {
+        Event::now(SessionId(id), EventKind::FileEdit { path: path.into() })
+    }
+
+    fn rules_of(f: &Fixture, pane: usize) -> Vec<String> {
+        f.ws.panes[pane]
+            .trust
+            .findings
+            .iter()
+            .map(|x| x.rule.clone())
+            .collect()
+    }
+
+    #[test]
+    fn two_running_sessions_editing_the_same_file_both_get_a_warning() {
+        let mut f = fixture(&["a", "b"]);
+        f.ws.handle_event(&edit_event(1, "/work/app/src/lib.rs"));
+        f.ws.tick();
+        assert!(!rules_of(&f, 0).contains(&"session-overlap".to_string()));
+        f.ws.handle_event(&edit_event(2, "/work/app/src/lib.rs"));
+        f.ws.tick();
+        for pane in 0..2 {
+            assert!(rules_of(&f, pane).contains(&"session-overlap".to_string()));
+        }
+        let finding = f.ws.panes[0]
+            .trust
+            .findings
+            .iter()
+            .find(|x| x.rule == "session-overlap");
+        let reason = finding.map(|x| x.reason.as_str()).unwrap_or_default();
+        assert!(reason.contains("also edited by b"), "{reason}");
+    }
+
+    #[test]
+    fn different_files_relative_paths_and_ended_sessions_do_not_overlap() {
+        let mut f = fixture(&["a", "b", "c"]);
+        f.ws.handle_event(&edit_event(1, "/work/app/a.rs"));
+        f.ws.handle_event(&edit_event(2, "/work/app/b.rs"));
+        f.ws.handle_event(&edit_event(1, "same.rs"));
+        f.ws.handle_event(&edit_event(2, "same.rs"));
+        f.ws.tick();
+        for pane in 0..3 {
+            assert!(!rules_of(&f, pane).contains(&"session-overlap".to_string()));
+        }
+        // Once the other session has ended, the warning goes away.
+        f.ws.handle_event(&edit_event(3, "/work/app/a.rs"));
+        f.ws.tick();
+        assert!(rules_of(&f, 0).contains(&"session-overlap".to_string()));
+        f.states[2].lock().unwrap().exit = exited(true);
+        f.ws.poll_exits();
+        f.ws.tick();
+        assert!(!rules_of(&f, 0).contains(&"session-overlap".to_string()));
     }
 
     #[test]
