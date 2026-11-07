@@ -47,7 +47,7 @@ them simply do not fire.
 | `destructive-command` | warn | Other `rm -rf`, `git push --force-with-lease`, `git checkout .`, `git restore .`, `git branch -D`, `chmod -R 777`, piping `curl`/`wget` into a shell, PowerShell `Remove-Item -Recurse -Force`, `rd /s` |
 | `tests-failing` | warn | The latest test run failed |
 | `unverified-changes` | info | Files changed and no test run came after the last edit |
-| `hooks-silent` | warn | Claude Code has printed plenty for a minute or more but its hooks have reported nothing, so live state and event-based findings may be missing. Clears as soon as a report arrives |
+| `hooks-silent` | warn | Claude Code or Codex has printed plenty for a minute or more but its hooks have reported nothing, so live state and event-based findings may be missing. For Codex this usually means `sakshi setup codex` has not been run or its hooks are not approved yet. Clears as soon as a report arrives |
 
 Template env files (`.env.example`, `.env.sample`) and public keys (`*.pub`)
 are not flagged. Paths inside the session's working directory are matched

@@ -58,6 +58,8 @@ impl FromStr for SessionId {
 pub enum AgentKind {
     /// Claude Code.
     Claude,
+    /// OpenAI Codex.
+    Codex,
     /// A plain shell or any program Sakshi has no adapter for.
     Generic,
 }
@@ -67,6 +69,7 @@ impl AgentKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentKind::Claude => "claude",
+            AgentKind::Codex => "codex",
             AgentKind::Generic => "generic",
         }
     }

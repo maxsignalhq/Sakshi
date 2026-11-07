@@ -6,6 +6,7 @@ mod config;
 mod history;
 mod hook;
 mod logging;
+mod setup;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -47,6 +48,20 @@ enum Sub {
     Hook {
         /// Which agent is calling, e.g. `claude`.
         agent: String,
+    },
+    /// One-time setup for an agent that needs it (currently Codex).
+    Setup {
+        /// Which agent to set up, e.g. `codex`.
+        agent: String,
+        /// Undo the setup.
+        #[arg(long, conflicts_with = "status")]
+        remove: bool,
+        /// Only show whether the agent is set up; change nothing.
+        #[arg(long)]
+        status: bool,
+        /// Do not ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
     },
     /// List recorded sessions, newest first.
     Sessions {
@@ -124,6 +139,23 @@ async fn main() -> Result<()> {
             // Hooks must never fail, print, or start a UI.
             hook::run(&agent).await;
             return Ok(());
+        }
+        Some(Sub::Setup {
+            agent,
+            remove,
+            status,
+            yes,
+        }) => {
+            return setup::run(
+                &agent,
+                setup::Options {
+                    remove,
+                    status,
+                    yes,
+                },
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+            );
         }
         Some(Sub::Sessions { limit }) => {
             return history::sessions(&sessions_dir()?, limit, &mut std::io::stdout().lock());

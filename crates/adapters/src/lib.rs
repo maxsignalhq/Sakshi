@@ -7,6 +7,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod claude;
+mod codex;
+pub mod codex_plugin;
 
 use std::io;
 use std::path::Path;
@@ -14,6 +16,7 @@ use std::path::Path;
 use sakshi_core::{AgentKind, Event, SessionId};
 
 pub use claude::ClaudeAdapter;
+pub use codex::CodexAdapter;
 
 /// Everything an adapter needs to prepare a launch.
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +25,10 @@ pub struct LaunchContext<'a> {
     pub hook_exe: &'a Path,
     /// Private directory where adapters may write generated config files.
     pub runtime_dir: &'a Path,
+    /// The program being launched, exactly as the user gave it.
+    pub program: &'a str,
+    /// The arguments the user passed, before any the adapter adds.
+    pub user_args: &'a [String],
 }
 
 /// Support for one coding agent.
@@ -34,6 +41,15 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Program to run when the user asks for this agent without a command.
     fn default_program(&self) -> &'static str;
+
+    /// Key that starts this agent from the session list. Defaults to the
+    /// first letter of the program; override it when that is taken.
+    fn start_key(&self) -> char {
+        self.default_program()
+            .chars()
+            .next()
+            .map_or('?', |c| c.to_ascii_lowercase())
+    }
 
     /// Whether `program`, as typed on the command line, is this agent.
     fn matches(&self, program: &str) -> bool;
@@ -51,7 +67,7 @@ pub trait AgentAdapter: Send + Sync {
 
 /// Every adapter Sakshi knows, whether or not the agent is installed.
 pub fn all() -> Vec<Box<dyn AgentAdapter>> {
-    vec![Box::new(ClaudeAdapter)]
+    vec![Box::new(ClaudeAdapter), Box::new(CodexAdapter)]
 }
 
 /// The adapter for `program`, if any.
@@ -80,6 +96,22 @@ mod tests {
         assert!(for_program("claude").is_some());
         assert!(for_program("/usr/local/bin/claude").is_some());
         assert!(for_program("bash").is_none());
+    }
+
+    #[test]
+    fn finds_the_codex_adapter() {
+        assert!(for_program("codex").is_some());
+        assert!(for_program("/opt/homebrew/bin/codex").is_some());
+        assert!(for_hook_name("codex").is_some());
+    }
+
+    #[test]
+    fn start_keys_are_unique() {
+        let keys: Vec<char> = all().iter().map(|a| a.start_key()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), keys.len(), "{keys:?}");
     }
 
     #[test]

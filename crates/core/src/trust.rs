@@ -168,7 +168,7 @@ pub struct TrustConfig {
 /// What Sakshi saw about a session that is not in its event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Observations {
-    /// The agent is expected to report through hooks (Claude Code is).
+    /// The agent is expected to report through hooks (Claude Code and Codex are).
     pub hooks_expected: bool,
     /// Bytes the session's terminal has printed so far.
     pub output_bytes: u64,
@@ -227,7 +227,8 @@ pub fn evaluate_with(
             "hooks-silent",
             Severity::Warn,
             "the agent is busy but its hooks have not reported anything, so live \
-             state and some findings may be missing",
+             state and some findings may be missing (for Codex, run `sakshi setup \
+             codex` and approve the hooks once)",
         ));
     }
     // Stable sort: equal severities keep rule order.
@@ -2105,6 +2106,21 @@ mod tests {
             running_secs: HOOK_SILENCE_SECS,
             root: None,
         }
+    }
+
+    #[test]
+    fn the_silent_hooks_finding_tells_codex_users_what_to_do() {
+        let report = evaluate_with(&[], None, &TrustConfig::default(), &busy_claude());
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.rule == "hooks-silent")
+            .unwrap();
+        assert!(
+            finding.reason.contains("sakshi setup codex"),
+            "{}",
+            finding.reason
+        );
     }
 
     #[test]
