@@ -6,6 +6,9 @@ All notable changes to Sakshi. The format follows
 ## Unreleased
 
 ### Added
+- `sakshi --worktree <agent>`: run the first session in its own git worktree on a new
+  `sakshi/<id>` branch. Opt-in; Sakshi prints the merge and remove commands on exit and
+  does neither itself.
 - `sakshi report --format pr`: a short Markdown block for a pull request description
   (verdict, findings, tests, files edited) with no local ids or absolute paths.
 - `session-overlap` trust rule (warn): two running sessions edited the same file, so

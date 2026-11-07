@@ -3,7 +3,8 @@
 //! A [`Baseline`] snapshots the working tree when a session starts, so a later
 //! [`Baseline::diff`] shows only what happened since, not the uncommitted work
 //! that was already there. Everything is local: `git` is run read-only, with
-//! optional locks off so it never gets in the agent's way.
+//! optional locks off so it never gets in the agent's way. The one thing that
+//! writes is [`add_worktree`], and only when the user asks for it.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -137,6 +138,49 @@ impl Baseline {
     }
 }
 
+/// A separate checkout created for one session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// The original repository's root.
+    pub repo: PathBuf,
+    /// The new checkout's root.
+    pub path: PathBuf,
+    /// The directory to start in: `path`, plus the sub-folder `dir` was in.
+    pub cwd: PathBuf,
+    /// The new branch checked out there.
+    pub branch: String,
+}
+
+/// Check out a new branch `sakshi/<tag>` from `HEAD` into a sibling folder of
+/// the repository containing `dir`, so a session can work without touching the
+/// main checkout. Uncommitted changes are not carried over. Nothing is merged
+/// or removed afterwards: that stays with the user.
+pub fn add_worktree(dir: &Path, tag: &str) -> io::Result<Worktree> {
+    let repo = PathBuf::from(git(dir, &["rev-parse", "--show-toplevel"])?.trim());
+    let name = repo
+        .file_name()
+        .map_or_else(|| "repo".to_string(), |n| n.to_string_lossy().into_owned());
+    let path = repo.with_file_name(format!("{name}-sakshi-{tag}"));
+    let branch = format!("sakshi/{tag}");
+    let path_arg = path.to_string_lossy().into_owned();
+    git(&repo, &["worktree", "add", "-q", "-b", &branch, &path_arg])?;
+    // `dir` may reach the repository through a symlink (`/var` on macOS), which
+    // git has already resolved; try both spellings before giving up on the
+    // sub-folder.
+    let canonical = dir.canonicalize().ok();
+    let rest = dir
+        .strip_prefix(&repo)
+        .ok()
+        .or_else(|| canonical.as_deref()?.strip_prefix(&repo).ok());
+    let cwd = rest.map_or_else(|| path.clone(), |rest| path.join(rest));
+    Ok(Worktree {
+        repo,
+        path,
+        cwd,
+        branch,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +247,50 @@ mod tests {
 
     fn paths(diff: &Diff) -> Vec<&str> {
         diff.files.iter().map(|f| f.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_worktree_is_a_separate_checkout_on_a_new_branch() {
+        let repo = Scratch::repo("wt");
+        repo.write("sub/b.txt", "b\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "sub"]);
+        repo.write("a.txt", "uncommitted\n");
+
+        let sub = repo.path().join("sub");
+        let wt = add_worktree(&sub, "t1").unwrap();
+        let _cleanup = Scratch(wt.path.clone());
+
+        assert_eq!(wt.branch, "sakshi/t1");
+        assert!(wt.path.join("a.txt").exists());
+        assert_eq!(wt.cwd, wt.path.join("sub"));
+        // Starts from HEAD: the uncommitted edit is not carried over.
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        // The original is untouched, and the new branch exists.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "uncommitted\n"
+        );
+        let branches = git(repo.path(), &["branch", "--list", "sakshi/t1"]).unwrap();
+        assert!(branches.contains("sakshi/t1"));
+        // Edits there are seen as changes by a baseline of the worktree only.
+        let base = Baseline::capture(&wt.cwd).unwrap();
+        std::fs::write(wt.path.join("new.txt"), "x\n").unwrap();
+        assert_eq!(paths(&base.diff().unwrap()), ["new.txt"]);
+    }
+
+    #[test]
+    fn a_worktree_needs_a_repository_and_a_free_branch_name() {
+        let plain = Scratch::new("wt-norepo");
+        assert!(add_worktree(plain.path(), "x").is_err());
+
+        let repo = Scratch::repo("wt-dup");
+        let first = add_worktree(repo.path(), "dup").unwrap();
+        let _cleanup = Scratch(first.path.clone());
+        assert!(add_worktree(repo.path(), "dup").is_err());
     }
 
     #[test]
