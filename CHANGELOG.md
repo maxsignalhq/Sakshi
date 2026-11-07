@@ -5,7 +5,7 @@ All notable changes to Sakshi. The format follows
 
 ## Unreleased
 
-## [0.2.0] - 2026-11-01
+## [0.2.0] - 2026-11-07
 
 ### Added
 - Codex support: live state (working, needs you, done), notifications and the
