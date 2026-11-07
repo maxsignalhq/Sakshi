@@ -405,10 +405,14 @@ fn relative_to(path: &str, root: Option<&str>) -> String {
     if let Some(root) = root {
         let root = normalize(root);
         let root = root.trim_end_matches('/');
-        if !root.is_empty() && path.len() > root.len() {
-            let (head, rest) = path.split_at(root.len());
-            if head.eq_ignore_ascii_case(root) && rest.starts_with('/') {
-                return rest.trim_start_matches('/').to_string();
+        // `get` yields None when the offset is not a char boundary, which
+        // means a multi-byte character straddles it and the path cannot be
+        // under the root.
+        if !root.is_empty() {
+            if let (Some(head), Some(rest)) = (path.get(..root.len()), path.get(root.len()..)) {
+                if head.eq_ignore_ascii_case(root) && rest.starts_with('/') {
+                    return rest.trim_start_matches('/').to_string();
+                }
             }
         }
     }
@@ -1899,6 +1903,29 @@ mod tests {
     }
 
     // ---- user configuration
+
+    #[test]
+    fn relative_to_strips_root_and_ignores_paths_outside_it() {
+        let root = Some("/home/me/app");
+        assert_eq!(relative_to("/home/me/app/src/a.rs", root), "src/a.rs");
+        assert_eq!(relative_to("/HOME/me/app/src/a.rs", root), "src/a.rs");
+        assert_eq!(relative_to("/elsewhere/a.rs", root), "/elsewhere/a.rs");
+    }
+
+    #[test]
+    fn relative_to_does_not_panic_on_multibyte_paths_outside_root() {
+        // Root is 12 bytes; byte 12 of this path falls inside the second `é`.
+        let root = Some("/home/me/app");
+        assert_eq!(
+            relative_to("docs/résumé.md", root),
+            "docs/résumé.md".to_string()
+        );
+        // A multi-byte path that is under the root still resolves.
+        assert_eq!(
+            relative_to("/home/me/app/docs/résumé.md", root),
+            "docs/résumé.md"
+        );
+    }
 
     #[test]
     fn globs_match_segments_and_depth() {
