@@ -9,6 +9,8 @@ All notable changes to Sakshi. The format follows
 - Codex now reports to Sakshi even when `sakshi` is not on your `PATH` (a build
   run from its folder, a custom install location). Sakshi puts its own folder on
   the `PATH` it gives Codex.
+- A Codex too old to accept `--no-daemon` still starts without live state, and
+  `sakshi.log` now says why instead of the session just turning yellow.
 
 ## [0.2.0] - 2026-11-07
 

@@ -66,9 +66,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> io::Result<Vec<String>> {
-        Ok(launch_flags(ctx.user_args, || {
-            supports_no_daemon(ctx.program)
-        }))
+        launch_flags(ctx.user_args, || supports_no_daemon(ctx.program))
     }
 
     fn launch_env(&self, ctx: &LaunchContext<'_>) -> Vec<(String, String)> {
@@ -92,15 +90,22 @@ const NO_DAEMON: &str = "--no-daemon";
 ///
 /// Nothing is added if the user already passed `--no-daemon` (Codex rejects it
 /// twice) or is connecting to a remote server (its hooks are out of reach
-/// either way), or if this Codex does not know the flag.
-fn launch_flags(user_args: &[String], supported: impl FnOnce() -> bool) -> Vec<String> {
+/// either way). If this Codex does not know the flag the result is an error:
+/// the launcher logs it and starts Codex anyway, but without live state,
+/// because without the flag its hooks cannot find the session.
+fn launch_flags(user_args: &[String], supported: impl FnOnce() -> bool) -> io::Result<Vec<String>> {
     let given = user_args
         .iter()
         .any(|a| a == NO_DAEMON || a == "--remote" || a.starts_with("--remote="));
-    if !given && supported() {
-        vec![NO_DAEMON.to_string()]
+    if given {
+        Ok(Vec::new())
+    } else if supported() {
+        Ok(vec![NO_DAEMON.to_string()])
     } else {
-        Vec::new()
+        Err(io::Error::other(format!(
+            "this Codex does not accept {NO_DAEMON}, so its hooks cannot reach Sakshi \
+             (update Codex); starting it without live state"
+        )))
     }
 }
 
@@ -563,27 +568,32 @@ mod tests {
     // `--no-daemon` keeps the session's own server, which they do see.
     #[test]
     fn runs_codex_without_the_shared_server() {
-        assert_eq!(launch_flags(&[], || true), args(&["--no-daemon"]));
+        assert_eq!(launch_flags(&[], || true).unwrap(), args(&["--no-daemon"]));
     }
 
     #[test]
     fn passes_other_arguments_through_unchanged() {
         assert_eq!(
-            launch_flags(&args(&["resume", "--last"]), || true),
+            launch_flags(&args(&["resume", "--last"]), || true).unwrap(),
             args(&["--no-daemon"])
         );
     }
 
+    // The launcher logs this error and starts Codex without it, so the reason
+    // is in sakshi.log instead of the session just turning yellow.
     #[test]
-    fn adds_nothing_when_codex_does_not_know_the_flag() {
-        assert!(launch_flags(&[], || false).is_empty());
+    fn reports_an_error_when_codex_does_not_know_the_flag() {
+        let err = launch_flags(&[], || false).unwrap_err().to_string();
+        assert!(err.contains("--no-daemon"), "{err}");
     }
 
     // Codex refuses `--no-daemon` given twice, which would stop it starting.
     #[test]
     fn does_not_repeat_a_flag_the_user_gave() {
         for user in [args(&["--no-daemon"]), args(&["resume", "--no-daemon"])] {
-            assert!(launch_flags(&user, || panic!("should not probe")).is_empty());
+            assert!(launch_flags(&user, || panic!("should not probe"))
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -591,7 +601,9 @@ mod tests {
     #[test]
     fn leaves_remote_sessions_alone() {
         for user in [args(&["--remote", "unix://"]), args(&["--remote=ws://h:1"])] {
-            assert!(launch_flags(&user, || panic!("should not probe")).is_empty());
+            assert!(launch_flags(&user, || panic!("should not probe"))
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -601,14 +613,17 @@ mod tests {
     mod probing {
         use super::*;
 
-        fn launch(program: &str, user_args: &[String]) -> Vec<String> {
-            let ctx = LaunchContext {
+        fn ctx<'a>(program: &'a str, user_args: &'a [String]) -> LaunchContext<'a> {
+            LaunchContext {
                 hook_exe: Path::new("sakshi"),
                 runtime_dir: Path::new("."),
                 program,
                 user_args,
-            };
-            CodexAdapter.launch_args(&ctx).unwrap()
+            }
+        }
+
+        fn launch(program: &str, user_args: &[String]) -> Vec<String> {
+            CodexAdapter.launch_args(&ctx(program, user_args)).unwrap()
         }
 
         #[test]
@@ -617,13 +632,15 @@ mod tests {
         }
 
         #[test]
-        fn a_program_that_rejects_the_flag_gets_nothing() {
-            assert!(launch("false", &[]).is_empty());
+        fn a_program_that_rejects_the_flag_is_an_error() {
+            assert!(CodexAdapter.launch_args(&ctx("false", &[])).is_err());
         }
 
         #[test]
-        fn a_program_that_cannot_be_run_gets_nothing() {
-            assert!(launch("sakshi-no-such-program-x", &[]).is_empty());
+        fn a_program_that_cannot_be_run_is_an_error() {
+            assert!(CodexAdapter
+                .launch_args(&ctx("sakshi-no-such-program-x", &[]))
+                .is_err());
         }
     }
 }
