@@ -9,6 +9,8 @@ All notable changes to Sakshi. The format follows
 - Install with Homebrew (`brew install maxsignalhq/tap/sakshi`) or Scoop (`maxsignalhq/scoop-bucket`).
 
 ### Fixed
+- Trust evaluation no longer panics on a file path containing non-ASCII
+  characters that lies outside the session directory (#17).
 - The generated Homebrew formula now passes `brew audit --strict --new`.
 
 ## [0.1.0] - 2026-10-24
