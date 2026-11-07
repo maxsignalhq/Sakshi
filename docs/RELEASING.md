@@ -54,11 +54,18 @@ workflow downloads `package-manifests.zip` from it and pushes
 `scoop/sakshi.json` to `maxsignalhq/scoop-bucket` (`bucket/sakshi.json`). It
 is a separate job, so if it fails the release is unaffected: re-run the job.
 
-**One-time setup.** Create a fine-grained personal access token with
-*Contents: Read and write* on those two repositories only, and save it as the
-Actions secret `PACKAGE_REPOS_TOKEN` in the Sakshi repository. Without the
-secret the job reports a notice and succeeds without pushing anything, and you
-publish by hand as below. Rotate the token before it expires.
+**One-time setup (done for 0.1.0).** Each repository has a write-enabled
+deploy key ("sakshi release workflow") under its Settings, Deploy keys. The
+private half of each is an Actions secret on the Sakshi repository:
+`TAP_DEPLOY_KEY` for `homebrew-tap` and `BUCKET_DEPLOY_KEY` for
+`scoop-bucket`. A deploy key can push to its one repository and nothing else,
+and it does not expire. Without the secrets the job reports a notice and
+succeeds without pushing anything, and you publish by hand as below.
+
+To rotate a key: `ssh-keygen -t ed25519 -N "" -f key`, remove the old deploy key
+on the repository and add `key.pub` with write access
+(`gh repo deploy-key add key.pub -R maxsignalhq/<repo> -w`), then
+`gh secret set <NAME> -R maxsignalhq/Sakshi < key` and delete the key file.
 
 ### By hand
 
@@ -87,5 +94,5 @@ users get a `sakshi` command with `winget install MaxSignalHQ.Sakshi`.
 ## What is not automated, and why
 
 Pushing the tag publishes a release, so a person does it on purpose. The tap
-and bucket update follows from the tag automatically, using the scoped token
+and bucket update follows from the tag automatically, using the deploy keys
 above. The winget pull request stays manual.
