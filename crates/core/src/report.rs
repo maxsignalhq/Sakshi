@@ -160,6 +160,71 @@ impl Report {
     }
 }
 
+/// Files listed in a pull-request description before "and N more".
+const MAX_PR_FILES: usize = 20;
+
+impl Report {
+    /// A short Markdown block to paste into a pull request description: the
+    /// verdict, the findings and the files touched, with paths made relative
+    /// to the session directory and no local ids or timestamps.
+    pub fn to_pr_markdown(&self) -> String {
+        let mut out = String::from("### Agent changes (recorded by Sakshi)\n\n");
+        let duration = format_age(self.duration_seconds());
+        out.push_str(&format!(
+            "{} ran for {duration}. **Trust: {}**\n\n",
+            self.agent,
+            self.trust.badge.as_str().to_uppercase()
+        ));
+        if self.trust.findings.is_empty() {
+            out.push_str("Nothing looked off.\n\n");
+        }
+        for finding in &self.trust.findings {
+            out.push_str(&format!(
+                "- **{}** `{}`: {}\n",
+                finding.severity.as_str(),
+                finding.rule,
+                finding.reason
+            ));
+        }
+        if !self.trust.findings.is_empty() {
+            out.push('\n');
+        }
+        let s = &self.summary;
+        if s.tests_passed + s.tests_failed + s.tests_unknown == 0 {
+            out.push_str("**Tests:** the agent ran none.\n");
+        } else {
+            out.push_str(&format!(
+                "**Tests (run by the agent):** {} passed, {} failed, {} unknown.\n",
+                s.tests_passed, s.tests_failed, s.tests_unknown
+            ));
+        }
+        if !s.files_edited.is_empty() {
+            out.push_str(&format!("\n**Files edited ({}):**\n", s.files_edited.len()));
+            for file in s.files_edited.iter().take(MAX_PR_FILES) {
+                out.push_str(&format!("- `{}`\n", code_safe(&relative(file, &self.cwd))));
+            }
+            let more = s.files_edited.len().saturating_sub(MAX_PR_FILES);
+            if more > 0 {
+                out.push_str(&format!("- ...and {more} more\n"));
+            }
+        }
+        out
+    }
+}
+
+/// `path` without the leading `cwd`, when it is under it.
+fn relative(path: &str, cwd: &str) -> String {
+    let path = path.replace('\\', "/");
+    let cwd = cwd.replace('\\', "/");
+    let cwd = cwd.trim_end_matches('/');
+    match path.strip_prefix(cwd) {
+        Some(rest) if !cwd.is_empty() && rest.starts_with('/') => {
+            rest.trim_start_matches('/').to_string()
+        }
+        _ => path,
+    }
+}
+
 /// Make text safe inside a Markdown code span on one line.
 fn code_safe(text: &str) -> String {
     text.split_whitespace()
@@ -246,6 +311,59 @@ mod tests {
             ),
             at(125, EventKind::State(SessionState::Done)),
         ]
+    }
+
+    #[test]
+    fn pr_markdown_is_short_relative_and_free_of_local_ids() {
+        let mut events = sample();
+        events.push(at(
+            7,
+            EventKind::FileEdit {
+                path: "/work/app/src/b.rs".into(),
+            },
+        ));
+        events.push(at(
+            8,
+            EventKind::FileEdit {
+                path: "/elsewhere/c.rs".into(),
+            },
+        ));
+        events.push(at(
+            9,
+            EventKind::TestRun {
+                command: "cargo test".into(),
+                passed: Some(true),
+            },
+        ));
+        let md = Report::from_events(&events).unwrap().to_pr_markdown();
+        for expected in [
+            "### Agent changes (recorded by Sakshi)",
+            "**Trust: RED**",
+            "`destructive-command`",
+            "**Tests (run by the agent):** 1 passed, 0 failed, 0 unknown.",
+            "**Files edited (3):**",
+            "- `src/a.rs`",
+            "- `src/b.rs`",
+            "- `/elsewhere/c.rs`",
+        ] {
+            assert!(md.contains(expected), "missing {expected:?} in:\n{md}");
+        }
+        // Nothing machine-specific: no session id, directory or timestamp.
+        for absent in ["/work/app", "Started", "Session:"] {
+            assert!(!md.contains(absent), "found {absent:?} in:\n{md}");
+        }
+    }
+
+    #[test]
+    fn pr_markdown_for_a_quiet_session_says_so() {
+        let events = vec![
+            session_event(),
+            at(1, EventKind::State(SessionState::Working)),
+        ];
+        let md = Report::from_events(&events).unwrap().to_pr_markdown();
+        assert!(md.contains("Nothing looked off."));
+        assert!(md.contains("**Tests:** the agent ran none."));
+        assert!(!md.contains("Files edited"));
     }
 
     #[test]

@@ -141,6 +141,22 @@ fn report_renders_markdown_for_the_latest_session() {
 }
 
 #[test]
+fn report_pr_format_is_a_short_pull_request_block() {
+    let data = DataDir::new("pr");
+    data.write_session(0x2, 100, "new", true);
+    let md = data.stdout(&["report", "--format", "pr"]);
+    assert!(
+        md.starts_with("### Agent changes (recorded by Sakshi)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("**Trust: RED**") && md.contains("src/main.rs"),
+        "{md}"
+    );
+    assert!(!md.contains("Session:"), "{md}");
+}
+
+#[test]
 fn report_can_pick_a_session_by_id_prefix() {
     let data = DataDir::new("prefix");
     data.write_session(0xabc1, 0, "first", false);
