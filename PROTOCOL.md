@@ -54,7 +54,10 @@ Unknown extra fields are ignored, so newer senders stay compatible.
 
 `session` and `trust` are recorded by Sakshi itself, at the start of a session
 and whenever its trust verdict changes (see TRUST.md). They appear in activity
-logs; agents and hooks have no reason to send them.
+logs; agents and hooks have no reason to send them. A finding's group
+(`concern` in `sakshi report --format json`) is worked out from its `rule` when
+a report is made and is not part of the message, so a rule name this Sakshi does
+not know, from a log written by a newer one, is shown under "Worth reviewing".
 
 States: `idle` started and not yet doing anything; `working` actively working;
 `waiting` needs the user (a question, a permission prompt, or a finished turn);
@@ -144,3 +147,10 @@ Codex has no notification hook, so "needs you" comes from `PermissionRequest`
 and from a finished or interrupted turn. Setup is not available on Windows yet:
 the hook needs a POSIX shell.
 
+## Stability
+
+`v: 1` is frozen as of Sakshi 1.0. The message shape and the event types above
+will not change or be removed. New event types and new optional `data` fields
+may be added, which is why readers ignore what they do not know. Anything that
+would break an existing sender or reader will be `v: 2`. Activity logs are these
+same lines, so a log written by any 1.x can be read by any later 1.x.

@@ -14,7 +14,9 @@ use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use sakshi_adapters::LaunchContext;
-use sakshi_core::{AgentKind, Diff, Event, EventBus, Session, SessionId, TrustConfig};
+use sakshi_core::{
+    AgentKind, Diff, Event, EventBus, Session, SessionId, SessionVerdict, TrustConfig,
+};
 use sakshi_git::Baseline;
 use sakshi_ipc::{Endpoint, IpcServer, RuntimeDir, ENDPOINT_ENV, SESSION_ENV};
 use sakshi_pty::{OutputReceiver, PtyError, PtySession, SpawnConfig, TermSize};
@@ -71,8 +73,9 @@ enum AppEvent {
     Tick,
 }
 
-/// Run the TUI until the user quits. Restores the terminal on exit.
-pub async fn run(config: RunConfig) -> Result<(), TuiError> {
+/// Run the TUI until the user quits. Restores the terminal on exit and
+/// returns what Sakshi concluded about each session, for the caller to print.
+pub async fn run(config: RunConfig) -> Result<Vec<SessionVerdict>, TuiError> {
     // Set up IPC before touching the terminal so failures print normally.
     let runtime = RuntimeDir::create()?;
     let endpoint = runtime.endpoint();
@@ -204,7 +207,7 @@ async fn run_loop(
     runtime: RuntimeDir,
     endpoint: Endpoint,
     mut server: IpcServer,
-) -> Result<(), TuiError> {
+) -> Result<Vec<SessionVerdict>, TuiError> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let launcher = Launcher {
         runtime,
@@ -300,6 +303,7 @@ async fn run_loop(
         start_diffs(&mut ws, &tx);
     }
 
+    let verdicts = ws.verdicts();
     ws.kill_all();
     // Dropping the workspace drops the last bus handle, which lets the log
     // writer drain its queue and stop; wait for it so the tail is on disk.
@@ -307,7 +311,7 @@ async fn run_loop(
     if let Some(thread) = log_thread {
         let _ = thread.join();
     }
-    Ok(())
+    Ok(verdicts)
 }
 
 /// The fewest key presses in one burst that count as a paste.

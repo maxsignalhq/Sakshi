@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use sakshi_core::{
     format_age, shared_edits, Badge, Diff, Event, EventBus, EventKind, SessionId, SessionState,
-    Severity, SharedEdit,
+    SessionVerdict, Severity, SharedEdit,
 };
 use sakshi_pty::TermSize;
 use time::OffsetDateTime;
@@ -96,6 +96,17 @@ pub(crate) struct Workspace {
     bus: EventBus,
     diff_queue: Vec<SessionId>,
     ticks: u64,
+    /// Verdicts of sessions closed before Sakshi quit, oldest first.
+    closed: Vec<SessionVerdict>,
+}
+
+fn verdict_of(pane: &Pane) -> SessionVerdict {
+    SessionVerdict {
+        id: pane.session.id,
+        name: pane.session.name.clone(),
+        agent: pane.session.kind.clone(),
+        trust: pane.trust.clone(),
+    }
 }
 
 /// Whether `key` is the detach chord, Ctrl+].
@@ -127,6 +138,7 @@ impl Workspace {
             bus,
             diff_queue: Vec::new(),
             ticks: 0,
+            closed: Vec::new(),
         }
     }
 
@@ -324,7 +336,8 @@ impl Workspace {
         let id = pane.session.id;
         if pane.exit.is_some() || pending == Some(Confirm::Close(id)) {
             pane.kill();
-            self.panes.remove(self.selected);
+            let pane = self.panes.remove(self.selected);
+            self.closed.push(verdict_of(&pane));
             self.selected = self.selected.min(self.panes.len().saturating_sub(1));
         } else {
             self.confirm = Some(Confirm::Close(id));
@@ -523,6 +536,16 @@ impl Workspace {
     pub fn resize(&mut self, screen: Rect) {
         self.screen = screen;
         self.resize_panes();
+    }
+
+    /// What Sakshi concluded about every session it ran, closed ones first,
+    /// then the open ones in list order. Used on shutdown.
+    pub fn verdicts(&mut self) -> Vec<SessionVerdict> {
+        // Through the usual path, so a verdict that changes here is logged too.
+        self.refresh_trust();
+        let mut all = self.closed.clone();
+        all.extend(self.panes.iter().map(verdict_of));
+        all
     }
 
     /// Kill every running session. Used on shutdown.
@@ -808,6 +831,35 @@ pub(crate) mod tests {
         assert!(states[0].lock().unwrap().killed);
         assert_eq!(ws.panes[0].session.name, "b");
         assert_eq!(ws.confirm, None);
+    }
+
+    #[test]
+    fn verdicts_cover_closed_and_open_sessions_and_see_the_latest_events() {
+        let (mut ws, _, _) = workspace_with(&["a", "b"]);
+        ws.handle_event(&Event::now(
+            SessionId(1),
+            EventKind::Command {
+                command: "rm -rf /".into(),
+            },
+        ));
+        ws.tick();
+        // Close "a": its verdict must outlive the pane.
+        ws.handle_key(press(KeyCode::Char('x')));
+        ws.handle_key(press(KeyCode::Char('x')));
+        // "b" misbehaves and Sakshi quits before the next tick.
+        ws.handle_event(&Event::now(
+            SessionId(2),
+            EventKind::Command {
+                command: "git push --force".into(),
+            },
+        ));
+        let verdicts = ws.verdicts();
+        let seen: Vec<(&str, Badge)> = verdicts
+            .iter()
+            .map(|v| (v.name.as_str(), v.trust.badge))
+            .collect();
+        assert_eq!(seen, [("a", Badge::Red), ("b", Badge::Red)]);
+        assert_eq!(verdicts[0].id, SessionId(1));
     }
 
     #[test]

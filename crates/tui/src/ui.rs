@@ -197,12 +197,20 @@ pub(crate) fn panel_lines(pane: &Pane, now: OffsetDateTime, attached: bool) -> V
     if pane.trust.findings.is_empty() {
         lines.push(Line::raw("  Nothing looks off."));
     }
-    for finding in &pane.trust.findings {
-        let (marker, style) = finding_marker(finding.severity);
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {marker} "), style),
-            Span::raw(finding.reason.clone()),
-        ]));
+    // Grouped by the question each finding answers, so the panel reads as a
+    // few answers rather than a list of rules.
+    for (concern, findings) in pane.trust.by_concern() {
+        lines.push(Line::styled(
+            format!("  {}", concern.title()),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        for finding in findings {
+            let (marker, style) = finding_marker(finding.severity);
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {marker} "), style),
+                Span::raw(finding.reason.clone()),
+            ]));
+        }
     }
 
     let away = pane.away_summary();
@@ -462,6 +470,7 @@ mod tests {
         let lines = panel_lines(&ws.panes[0], OffsetDateTime::now_utc(), false);
         let text = text_of(&lines);
         assert!(text.contains("Trust  RED"), "{text}");
+        assert!(text.contains("  Risky actions\n"), "{text}");
         assert!(text.contains("✗ ran `rm -rf /`"), "{text}");
         assert!(text.contains("Not a git repository."), "{text}");
         assert!(text.contains("$ rm -rf /"), "{text}");

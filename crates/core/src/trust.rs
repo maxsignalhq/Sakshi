@@ -129,6 +129,98 @@ impl Finding {
     }
 }
 
+/// The question a finding answers. Every rule belongs to exactly one, so a
+/// list of findings reads as a handful of answers instead of a list of rules.
+///
+/// The concern is derived from the rule name, so it never appears on the wire
+/// or in the activity log and old logs group the same way as new ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Concern {
+    /// Did the agent make a check pass without doing the work?
+    FakedSuccess,
+    /// Did it do something dangerous?
+    RiskyAction,
+    /// Is the work verified?
+    Unverified,
+    /// What deserves a human look?
+    Review,
+    /// What could Sakshi not see?
+    BlindSpot,
+}
+
+impl Concern {
+    /// Every concern, in the order they are shown.
+    pub const ALL: [Concern; 5] = [
+        Concern::FakedSuccess,
+        Concern::RiskyAction,
+        Concern::Unverified,
+        Concern::Review,
+        Concern::BlindSpot,
+    ];
+
+    /// The stable name used in JSON reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Concern::FakedSuccess => "faked-success",
+            Concern::RiskyAction => "risky-action",
+            Concern::Unverified => "unverified",
+            Concern::Review => "review",
+            Concern::BlindSpot => "blind-spot",
+        }
+    }
+
+    /// The heading shown to people.
+    pub fn title(self) -> &'static str {
+        match self {
+            Concern::FakedSuccess => "Faked success",
+            Concern::RiskyAction => "Risky actions",
+            Concern::Unverified => "Not verified",
+            Concern::Review => "Worth reviewing",
+            Concern::BlindSpot => "Blind spots",
+        }
+    }
+
+    /// The concern of a built-in rule, or `None` for a name Sakshi does not know.
+    pub fn of_known_rule(rule: &str) -> Option<Concern> {
+        Some(match rule {
+            "tests-deleted"
+            | "tests-skipped"
+            | "assertions-weakened"
+            | "trivial-assertion"
+            | "coverage-lowered"
+            | "checks-suppressed" => Concern::FakedSuccess,
+            "destructive-command" | "sensitive-file" | "secret-added" | "outside-project" => {
+                Concern::RiskyAction
+            }
+            "tests-failing" | "repeated-failure" | "unverified-changes" => Concern::Unverified,
+            "large-change" | "lockfile-changed" | "manifest-changed" | "session-overlap" => {
+                Concern::Review
+            }
+            "hooks-silent" => Concern::BlindSpot,
+            _ => return None,
+        })
+    }
+
+    /// The concern of any rule name. A rule this build does not know (a log
+    /// written by a newer Sakshi) is something to review.
+    pub fn of_rule(rule: &str) -> Concern {
+        Concern::of_known_rule(rule).unwrap_or(Concern::Review)
+    }
+}
+
+impl fmt::Display for Concern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Finding {
+    /// The question this finding answers.
+    pub fn concern(&self) -> Concern {
+        Concern::of_rule(&self.rule)
+    }
+}
+
 /// The verdict: a badge and the findings behind it, worst first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustReport {
@@ -145,6 +237,31 @@ impl TrustReport {
             badge: Badge::Green,
             findings: Vec::new(),
         }
+    }
+
+    /// The findings grouped by the question they answer, in [`Concern::ALL`]
+    /// order, most severe first within a group. Empty groups are left out.
+    pub fn by_concern(&self) -> Vec<(Concern, Vec<&Finding>)> {
+        Concern::ALL
+            .into_iter()
+            .filter_map(|concern| {
+                let group: Vec<&Finding> = self
+                    .findings
+                    .iter()
+                    .filter(|f| f.concern() == concern)
+                    .collect();
+                (!group.is_empty()).then_some((concern, group))
+            })
+            .collect()
+    }
+
+    /// The finding that decided the badge: the first of the most severe ones
+    /// that is not just a note. `None` for a green verdict.
+    pub fn worst(&self) -> Option<&Finding> {
+        self.findings
+            .iter()
+            .filter(|f| f.severity > Severity::Info)
+            .max_by_key(|f| (f.severity, std::cmp::Reverse(f.concern())))
     }
 }
 
@@ -2714,5 +2831,94 @@ mod tests {
             findings: Vec::new(),
         })];
         assert!(hooks_silent(&bookkeeping, &busy_claude()));
+    }
+
+    /// Rule names from the first column of the tables in TRUST.md.
+    fn documented_rules() -> BTreeSet<String> {
+        include_str!("../../../TRUST.md")
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split('`').next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn every_documented_rule_has_a_concern_and_nothing_else_does() {
+        let documented = documented_rules();
+        assert_eq!(documented.len(), 18, "{documented:?}");
+        for rule in &documented {
+            assert!(
+                Concern::of_known_rule(rule).is_some(),
+                "{rule} is in TRUST.md but has no concern"
+            );
+        }
+        // The engine's own source names no rule that TRUST.md leaves out.
+        let source = include_str!("trust.rs");
+        let engine = source.split("\n#[cfg(test)]").next().unwrap();
+        for rule in engine
+            .split("Finding::new(")
+            .skip(1)
+            .filter_map(|rest| rest.trim_start().strip_prefix('"'))
+            .filter_map(|rest| rest.split('"').next())
+        {
+            assert!(documented.contains(rule), "{rule} is not in TRUST.md");
+        }
+    }
+
+    #[test]
+    fn an_unknown_rule_is_something_to_review_not_an_error() {
+        assert_eq!(Concern::of_known_rule("from-the-future"), None);
+        assert_eq!(Concern::of_rule("from-the-future"), Concern::Review);
+    }
+
+    #[test]
+    fn findings_group_by_concern_in_a_fixed_order() {
+        let events = [command("rm -rf /"), edit("src/a.rs"), test_run(Some(false))];
+        let d = Diff {
+            files: vec![
+                file("tests/a_test.py", ChangeKind::Deleted, &[], &["assert x"]),
+                file("Cargo.lock", ChangeKind::Modified, &["a"], &["b"]),
+            ],
+        };
+        let report = evaluate(&events, Some(&d));
+        let groups = report.by_concern();
+        let order: Vec<Concern> = groups.iter().map(|(c, _)| *c).collect();
+        assert_eq!(
+            order,
+            [
+                Concern::FakedSuccess,
+                Concern::RiskyAction,
+                Concern::Unverified,
+                Concern::Review
+            ]
+        );
+        // Every finding lands in exactly one group.
+        let grouped: usize = groups.iter().map(|(_, g)| g.len()).sum();
+        assert_eq!(grouped, report.findings.len());
+        assert!(TrustReport::clean().by_concern().is_empty());
+    }
+
+    #[test]
+    fn the_worst_finding_decides_and_notes_never_do() {
+        let events = [command("rm -rf /")];
+        let d = Diff {
+            files: vec![file(
+                "tests/a_test.py",
+                ChangeKind::Deleted,
+                &[],
+                &["assert x"],
+            )],
+        };
+        // Two alerts: faking success is named before a risky action.
+        let report = evaluate(&events, Some(&d));
+        assert_eq!(report.worst().unwrap().rule, "tests-deleted");
+        // Only a note: the verdict is green and nothing is "worst".
+        let lock = Diff {
+            files: vec![file("Cargo.lock", ChangeKind::Modified, &["a"], &["b"])],
+        };
+        let notes = evaluate(&[], Some(&lock));
+        assert_eq!(notes.badge, Badge::Green);
+        assert!(notes.worst().is_none());
     }
 }

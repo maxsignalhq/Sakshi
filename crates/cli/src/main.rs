@@ -206,6 +206,7 @@ async fn main() -> Result<()> {
     } else {
         sakshi_store::data_dir()
     };
+    let logged = data_dir.is_some();
     let result = sakshi_tui::run(run_config(
         cli.command,
         cwd,
@@ -215,10 +216,18 @@ async fn main() -> Result<()> {
     ))
     .await
     .context("sakshi exited with an error");
+    // The verdict is the last thing on screen: it is what Sakshi is for.
+    if let Some(summary) = result
+        .as_ref()
+        .ok()
+        .and_then(|verdicts| sakshi_core::exit_summary(verdicts, logged))
+    {
+        println!("{summary}");
+    }
     if let Some(wt) = &worktree {
         println!("{}", worktree_notice(wt));
     }
-    result
+    result.map(|_| ())
 }
 
 /// A short unique suffix for a worktree and its branch.

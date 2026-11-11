@@ -2,10 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Read SPEC.md before any work. It is the source of truth for scope, stack, architecture, and the phased roadmap.
+Read SPEC.md before any work. It is the source of truth for what Sakshi is (a witness that answers "can I trust what the agent just did?"), what it deliberately is not, and what 1.0 keeps stable.
 
 ## Rules
-- Work one roadmap phase at a time. Stop at the end of the phase and report how to verify it.
+- Work one change at a time. Stop at the end of it and report how to verify it.
+- Sakshi only watches: nothing that edits, merges, blocks, orchestrates or decides for the user. Check new work against "Deciding what gets in" in SPEC.md.
+- Do not break what SPEC.md says 1.0 keeps stable (protocol v1, rule and concern names, report JSON fields, config keys, CLI flags).
 - Keep `crates/core` free of UI and OS-specific code.
 - No `unwrap`/`expect` outside tests. Use thiserror in libraries, anyhow in the binary.
 - Every change must pass: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -29,7 +31,7 @@ python3 -m unittest discover -s packaging   # package-manifest + installer tests
 - Env vars: `SAKSHI_DATA_DIR` (logs location), `SAKSHI_CONFIG`, `SAKSHI_LOG=debug`. `SAKSHI_ENDPOINT` / `SAKSHI_SESSION_ID` are set by Sakshi for child processes so hooks can call back.
 
 ## Status
-The roadmap in SPEC.md is complete and 0.4.0 is released; the "one phase at a time" rule applies to new work. Behaviour changes must also update TRUST.md (rules), PROTOCOL.md (wire protocol) and the `Unreleased` section of CHANGELOG.md. Every trust rule needs a test for what it catches *and* what it must not flag.
+1.0.0 is the current release line. Behaviour changes must also update TRUST.md (rules), PROTOCOL.md (wire protocol) and the `Unreleased` section of CHANGELOG.md. Every trust rule needs a test for what it catches *and* what it must not flag, and belongs to exactly one `Concern` (a test checks TRUST.md and `Concern::of_known_rule` agree).
 
 ## Architecture
 Sakshi runs agents inside PTYs it owns, and learns what they do from two independent sources that the trust engine then cross-checks.
@@ -37,7 +39,7 @@ Sakshi runs agents inside PTYs it owns, and learns what they do from two indepen
 **Data flow.** `pty` spawns the program and feeds a `vt100` emulator (`tui/emulator.rs`) for the screen. Agents report events a second way: the adapter's `launch_args` inject a generated config (for Claude: `--settings <file>`, never touching the user's own settings) whose hooks run `sakshi hook <agent>`. That shim (`cli/src/hook.rs`) reads the payload from stdin, finds Sakshi via `SAKSHI_ENDPOINT`/`SAKSHI_SESSION_ID`, and sends newline-delimited JSON over a Unix socket or Windows named pipe (`ipc`, behind a transport trait). It must never print, block (500 ms timeout) or exit non-zero. The `ipc` server feeds events into the `core` `EventBus`; the TUI workspace, the activity-log writer (`store`) and notifications are all subscribers.
 
 **Crates.**
-- `core`: session/event model, `EventBus`, trust engine (`trust.rs`, by far the largest file), diff parsing, summaries, reports, secret redaction. Trust evaluation is pure: `evaluate_with(events, diff, config, observations)` returns findings → green/yellow/red badge. `Observations` carry non-event facts (e.g. terminal output volume) used by rules like `hooks-silent`.
+- `core`: session/event model, `EventBus`, trust engine (`trust.rs`, by far the largest file), diff parsing, summaries, reports, secret redaction. Trust evaluation is pure: `evaluate_with(events, diff, config, observations)` returns findings → green/yellow/red badge. Findings are grouped for display by `Concern` (faked success, risky actions, not verified, worth reviewing, blind spots), derived from the rule name and never stored. `report.rs` also builds the verdict summary the binary prints on exit. `Observations` carry non-event facts (e.g. terminal output volume) used by rules like `hooks-silent`.
 - `adapters`: `AgentAdapter` trait (match program, probe install, `launch_args`, `translate_hook` payload → `Event`s). `ClaudeAdapter` injects hooks per session; `CodexAdapter` relies on a one-time `sakshi setup codex` plugin whose files are frozen (any change re-prompts every user for approval) and launches Codex with `--no-daemon`, because Codex runs hooks in a shared background server that never sees a session's `SAKSHI_*` env; `docs/ADAPTERS.md` is the guide for adding one, which also needs an `AgentKind` variant in `core/session.rs`.
 - `git`: baseline snapshot at session start and diffs against it (this is how "what changed" is blamed on a session). `store`: per-session append-only JSONL logs, data/config dirs, owner-only permissions. Events are redacted (`core::redact`) before being written.
 - `tui`: `workspace.rs` is pure state (keys and events in, "what the caller must do" out; no I/O), `app.rs` is the event loop that does the I/O, `ui.rs` renders. Keep that split.

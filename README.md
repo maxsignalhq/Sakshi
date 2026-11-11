@@ -1,17 +1,25 @@
 # Sakshi
 
-**The witness for your AI coding agents.**
+**The witness for your AI coding agents: can you trust what it just did?**
 
-Sakshi (साक्षी, Sanskrit for "the witness") runs and supervises AI coding agents from one terminal. It supports Claude Code and Codex. See what every agent is doing, get notified when one needs you, and know at a glance whether its work can be trusted.
+Sakshi (साक्षी, Sanskrit for "the witness") is the terminal you run Claude Code and Codex in. It watches what each agent does, checks that against what actually changed on disk, and gives every session a verdict: green, yellow or red, with plain-English reasons. It only watches. It never edits, blocks or merges anything.
 
 ![Sakshi watching an agent fake a green build: the agent reports success, Sakshi turns red and lists why](docs/media/demo.gif)
 
 <sub>An agent is asked to fix failing tests. It skips the test, deletes the assertions and lowers the coverage gate, then reports "All tests pass". Sakshi turns the session red and says exactly why. (Recorded with a scripted stand-in agent so it is reproducible; see <a href="scripts/demo">scripts/demo</a>.)</sub>
 
-> Status: 0.4, early. It works and is tested on macOS, Linux and Windows, but it is young, and the trust rules are heuristics (see [TRUST.md](TRUST.md)).
-
 ## Why
-Running agents is easy. Knowing what they did is not. Sakshi watches each session and tells you when something looks off: tests skipped or deleted, assertions weakened, sensitive files touched, destructive commands run.
+Running agents is easy. Knowing whether to accept what they did is not. "All tests pass" is true when the agent fixed the bug, and also true when it deleted the test. Sakshi tells the two apart by answering five questions about every session:
+
+| Question | Examples of what it catches |
+|----------|-----------------------------|
+| **Faked success**: did it make a check pass without doing the work? | Tests deleted or skipped, assertions weakened, coverage gate lowered, lint or type checks silenced |
+| **Risky actions**: did it do something dangerous? | `git push --force`, `rm -rf`, a credential written into a file, `.env` or CI config touched, edits outside the project |
+| **Not verified**: has the work been tested? | Tests failing, the same test failing over and over, edits with no test run after them |
+| **Worth reviewing**: what deserves a look before you accept? | A very large diff, new dependencies, two sessions editing the same file |
+| **Blind spots**: what could Sakshi not see? | The agent's hooks have gone silent, so the badge cannot be trusted either |
+
+The verdict is a prompt to look, not proof: the rules are heuristics, and [TRUST.md](TRUST.md) lists every one and what it misses. From 1.0 the rule names, report format, protocol and command line are stable; [SPEC.md](SPEC.md#what-10-keeps-stable) says exactly what is promised.
 
 ## Install
 
@@ -64,7 +72,7 @@ sakshi claude                # start Claude Code inside Sakshi
 sakshi claude --resume       # arguments after the program go to the program
 ```
 
-Sakshi shows a session list on the left and the selected session's terminal beside it. Agents run exactly as they would in any terminal; Sakshi only watches.
+Sakshi shows a session list on the left and the selected session's terminal beside it. Agents run exactly as they would in any terminal; Sakshi only watches. Each session has a coloured dot: that is its verdict.
 
 **Attached** (typing into a session): everything goes to the program. The one key Sakshi keeps is **Ctrl+]**, which detaches you back to the list. **Shift+PgUp / Shift+PgDn** scroll back through the session's output; typing or pasting returns you to the live screen. Pasting, including several lines at once, works: programs that ask to be told about pastes get them marked as pastes, so a pasted newline is text and not Enter.
 
@@ -87,10 +95,18 @@ Sessions keep running while you are on the list or in another session. They end 
 
 ### What it tells you
 
+- **Trust badge** (the coloured dot): green, yellow or red. Press `t` for the reasons, grouped under the five questions above. See [TRUST.md](TRUST.md) for every rule.
+- **The verdict when you quit.** Sakshi's last words are one line per agent: its badge and the finding that decided it, with the command for the full report. You do not have to remember to look.
+
+  ```
+  Sakshi's verdict:
+    RED     claude  Faked success: lowered a coverage threshold in pyproject.toml: `fail_under = 90` to `fail_under = 60` (+2 more)
+    GREEN   codex   nothing looked off
+  Details: sakshi sessions, then sakshi report <session>
+  ```
 - **State** per session: `○` idle, `●` working, `!` needs you, `✓` done, `✗` failed. For Claude Code and Codex this is live, from their hooks. Other programs show only running or ended.
 - **Notifications** when a session you are not looking at needs you, finishes or fails, or turns red. `--no-notify` turns them off.
 - **Isolation, if you want it.** `sakshi --worktree claude` checks out a new branch (`sakshi/<id>`) from `HEAD` into a sibling folder and runs the session there, so parallel agents do not trample each other or your checkout. Uncommitted changes are not carried over. When you quit, Sakshi prints the commands to merge or drop the branch; it never merges or deletes anything itself.
-- **Trust badge** (a coloured dot): green, yellow or red, with plain-English reasons in the details panel. See [TRUST.md](TRUST.md) for every rule.
 - **While you were away**: re-attach to a session that did things while you were gone and Sakshi summarises them first.
 
 ### Looking back
@@ -101,7 +117,7 @@ Every session is recorded to a local log. Afterwards:
 sakshi sessions                      # what ran, newest first, with state and trust
 sakshi report                        # Markdown report of the latest session
 sakshi report 0123abcd --format json # a specific session (any unique prefix of its id), as JSON
-sakshi report --format pr            # a short block to paste into a pull request description
+sakshi report --format pr            # a short block to paste into a pull request description, so reviewers see the verdict too
 sakshi replay --speed 10             # replay the timeline at 10x
 ```
 
@@ -151,7 +167,7 @@ Logs are readable by your user only (on Unix), and the commands in them have obv
 - On Windows the console reports a paste as a burst of key presses. Sakshi recognises a burst of eight or more characters containing a line break as a paste, so a very short multi-line paste can still be typed line by line.
 - Agents running inside WSL cannot reach Sakshi's Windows pipe, so they show only running or ended. Run Sakshi inside WSL instead, where it behaves as on Linux.
 - Change tracking needs a git repository. Work you had uncommitted before a session started is not blamed on it.
-- Live state exists for Claude Code and Codex. Codex test runs have an unknown pass/fail unless Codex reports an exit code. Adapters for other agents are the natural next step; the [protocol](PROTOCOL.md) is small on purpose, and [docs/ADAPTERS.md](docs/ADAPTERS.md) shows how to add one.
+- Live state exists for Claude Code and Codex. Codex test runs have an unknown pass/fail unless Codex reports an exit code. Other agents are added on request, when they can be tested against the real thing ([docs/ADAPTERS.md](docs/ADAPTERS.md)); meanwhile anything that can write a line of JSON to a socket can report through the [protocol](PROTOCOL.md).
 
 ## Develop
 
@@ -162,7 +178,7 @@ cargo test
 python3 -m unittest discover -s packaging
 ```
 
-Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), and please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). [SPEC.md](SPEC.md) describes the design and [CLAUDE.md](CLAUDE.md) the working rules. The workspace is `core` (model, events, trust engine; no UI or OS code), `pty`, `ipc`, `adapters`, `git`, `store`, `tui` and `cli`.
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), and please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). [SPEC.md](SPEC.md) says what Sakshi is, what it deliberately is not, and what stays stable; [CLAUDE.md](CLAUDE.md) holds the working rules. The workspace is `core` (model, events, trust engine; no UI or OS code), `pty`, `ipc`, `adapters`, `git`, `store`, `tui` and `cli`.
 
 ## License
 [MIT](LICENSE)

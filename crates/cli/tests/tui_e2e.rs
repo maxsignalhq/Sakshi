@@ -100,3 +100,42 @@ async fn a_multi_line_paste_reaches_the_shell_line_by_line() {
     })
     .await;
 }
+
+/// Quitting leaves the verdict as the last thing on screen. A shell stands in
+/// for the agent and reports a force-push through the real hook shim.
+#[cfg(unix)]
+#[tokio::test]
+async fn quitting_prints_the_verdict_for_a_session_that_looked_off() {
+    let data = DataDir::new("verdict");
+    let mut tui = Tui::start(&["--no-notify", SHELL], &data.0);
+    tui.wait_for("the attached footer", |s| s.contains("Ctrl+] detach"))
+        .await;
+
+    let report = format!(
+        "echo '{{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\
+         \"tool_input\":{{\"command\":\"git push --force\"}}}}' | {} hook claude; echo sent-$?\r",
+        common::sakshi_bin()
+    );
+    tui.send(report.as_bytes());
+    tui.wait_for("the hook to return", |s| s.contains("sent-0"))
+        .await;
+
+    tui.send(&[CTRL_RIGHT_BRACKET]);
+    tui.wait_for("the list footer", |s| s.contains("Enter attach"))
+        .await;
+    tui.send(b"t");
+    tui.wait_for("the finding under its concern", |s| {
+        s.contains("Trust  RED") && s.contains("Risky actions")
+    })
+    .await;
+    tui.send(b"qq");
+    assert!(tui.wait_for_exit().await, "sakshi should exit cleanly");
+
+    tui.wait_for("the verdict after exit", |s| {
+        s.contains("Sakshi's verdict:")
+            && s.contains("RED")
+            && s.contains("Risky actions: ")
+            && s.contains("Details: sakshi report ")
+    })
+    .await;
+}
