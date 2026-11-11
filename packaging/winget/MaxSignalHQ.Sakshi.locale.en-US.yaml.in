@@ -9,7 +9,7 @@ PackageUrl: https://github.com/maxsignalhq/Sakshi
 License: MIT
 LicenseUrl: https://github.com/maxsignalhq/Sakshi/blob/main/LICENSE
 ShortDescription: The witness for your AI coding agents.
-Description: Run and supervise AI coding agents such as Claude Code and Codex from one terminal. See what each agent is doing, get notified when one needs you, and know at a glance whether its work can be trusted. Local-first, with no telemetry.
+Description: Run Claude Code and Codex inside Sakshi and know whether their work can be trusted. Sakshi watches what each agent does, checks it against what actually changed, and gives every session a green, yellow or red verdict with plain-English reasons. It only watches. Local-first, with no telemetry.
 Tags:
   - ai
   - claude

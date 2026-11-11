@@ -30,30 +30,70 @@ them simply do not fire.
 
 ## Rules
 
+Every rule answers one of five questions. Findings are shown grouped under them
+in the details panel and in reports, and the JSON report gives each finding's
+group as `concern`.
+
+### Faked success
+
+Did the agent make a check pass without doing the work? This is the question Sakshi exists for: these are the changes that make "all tests pass" true and meaningless. (`concern`: `faked-success`)
+
 | Rule | Severity | Fires when |
 |------|----------|------------|
 | `tests-deleted` | alert | A test file was deleted |
 | `tests-skipped` | warn | Lines were added that switch tests off or narrow a run: `#[ignore]`, `@pytest.mark.skip`, `.skip(`, `.only(`, `xit(`, `t.Skip(`, `@Disabled`, `@Ignore`, ... (test files, plus `#[ignore]` anywhere in Rust) |
 | `assertions-weakened` | warn | Test files lost more assertion lines than they gained |
 | `trivial-assertion` | warn | A test gained an assertion that is always true, such as `assert!(true)` |
+| `coverage-lowered` | alert | A coverage threshold went down: `fail_under`, `--cov-fail-under`, `--fail-under-lines`, Jest/nyc/Vitest `coverageThreshold` numbers, codecov `target`, ... |
+| `checks-suppressed` | warn | Lines were added that silence a check instead of fixing it: `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `# noqa`, `# type: ignore`, `#[allow(`, `@SuppressWarnings`, `//nolint`, `istanbul ignore`, ... (doc files are skipped) |
+
+### Risky actions
+
+Did it do something dangerous, or touch something it should not have? (`concern`: `risky-action`)
+
+| Rule | Severity | Fires when |
+|------|----------|------------|
+| `destructive-command` | alert | `git push --force`, `git reset --hard`, `git clean -f`, `rm -rf` of `/`, `~`, `*`, `.` and similar, `DROP TABLE` / `DROP DATABASE`, `dd` onto a device, `mkfs` |
+| `destructive-command` | warn | Other `rm -rf`, `git push --force-with-lease`, `git checkout .`, `git restore .`, `git branch -D`, `chmod -R 777`, piping `curl`/`wget` into a shell, PowerShell `Remove-Item -Recurse -Force`, `rd /s` |
 | `sensitive-file` | alert | A secrets file was touched: `.env`, `*.pem`, `*.key`, `id_rsa`, `.npmrc`, `credentials*`, anything under `.ssh/`, `.aws/`, `.gnupg/`, `.kube/`, or git internals under `.git/` |
 | `sensitive-file` | warn | CI or automation config was touched: `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`, `.husky/`, `CODEOWNERS`, ... |
 | `sensitive-file` | warn | Business-critical code was touched: a path with a word like `auth`, `login`, `oauth`, `jwt` (authentication), `payment`, `billing`, `invoice`, `ledger`, `checkout` (payments) or `migration`, `migrate`, `alembic`, `flyway` (database migrations). Whole words only, so `author.rs` is fine; test and doc files are left to the test rules |
 | `sensitive-file` | yours | A path matched a pattern in your [config](#your-own-rules) |
-| `outside-project` | warn | A file outside the session's directory was edited (scratch space like `/tmp` and an agent's own notes are ignored; add a pattern to `ignore_paths` to silence others) |
 | `secret-added` | alert | An added line looks like a real credential: a GitHub, GitLab, Anthropic, OpenAI-style, Slack, npm or Google key, an AWS key id, a private key header, or a password inside a URL. Placeholders such as `xxxx` or `your-key` are ignored, and the finding names the file, never the secret |
-| `coverage-lowered` | alert | A coverage threshold went down: `fail_under`, `--cov-fail-under`, `--fail-under-lines`, Jest/nyc/Vitest `coverageThreshold` numbers, codecov `target`, ... |
-| `checks-suppressed` | warn | Lines were added that silence a check instead of fixing it: `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `# noqa`, `# type: ignore`, `#[allow(`, `@SuppressWarnings`, `//nolint`, `istanbul ignore`, ... (doc files are skipped) |
-| `large-change` | info / warn | The session changed 25 or more files, or 1000 or more lines (lockfiles not counted): a big diff to review. Warn at three times that |
-| `lockfile-changed` | info | A dependency lockfile changed: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, ... |
-| `manifest-changed` | info | A dependency manifest changed: `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Gemfile`, ... Look for packages the agent added |
-| `destructive-command` | alert | `git push --force`, `git reset --hard`, `git clean -f`, `rm -rf` of `/`, `~`, `*`, `.` and similar, `DROP TABLE` / `DROP DATABASE`, `dd` onto a device, `mkfs` |
-| `destructive-command` | warn | Other `rm -rf`, `git push --force-with-lease`, `git checkout .`, `git restore .`, `git branch -D`, `chmod -R 777`, piping `curl`/`wget` into a shell, PowerShell `Remove-Item -Recurse -Force`, `rd /s` |
-| `session-overlap` | warn | Another running Sakshi session edited the same file (absolute paths only), so their changes may collide. Clears when either session ends |
+| `outside-project` | warn | A file outside the session's directory was edited (scratch space like `/tmp` and an agent's own notes are ignored; add a pattern to `ignore_paths` to silence others) |
+
+### Not verified
+
+Has the work been tested since it last changed? (`concern`: `unverified`)
+
+| Rule | Severity | Fires when |
+|------|----------|------------|
 | `tests-failing` | warn | The latest test run failed |
 | `repeated-failure` | warn | The same test command failed 3 or more times in a row (replaces `tests-failing`): the agent may be stuck |
 | `unverified-changes` | info | Files changed and no test run came after the last edit |
+
+### Worth reviewing
+
+Nothing wrong in itself, but look before you accept. (`concern`: `review`)
+
+| Rule | Severity | Fires when |
+|------|----------|------------|
+| `large-change` | info / warn | The session changed 25 or more files, or 1000 or more lines (lockfiles not counted): a big diff to review. Warn at three times that |
+| `lockfile-changed` | info | A dependency lockfile changed: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `go.sum`, ... |
+| `manifest-changed` | info | A dependency manifest changed: `Cargo.toml`, `package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Gemfile`, ... Look for packages the agent added |
+| `session-overlap` | warn | Another running Sakshi session edited the same file (absolute paths only), so their changes may collide. Clears when either session ends |
+
+### Blind spots
+
+What could Sakshi not see? A green badge means little if Sakshi was not being told anything. (`concern`: `blind-spot`)
+
+| Rule | Severity | Fires when |
+|------|----------|------------|
 | `hooks-silent` | warn | Claude Code or Codex has printed plenty for a minute or more but its hooks have reported nothing, so live state and event-based findings may be missing. For Codex this usually means `sakshi setup codex` has not been run or its hooks are not approved yet. Clears as soon as a report arrives |
+
+Rule names and concern names are stable from 1.0: they are never renamed or
+reused. What a rule matches and how severe it is are tuned as false positives
+and misses turn up, and every such change is listed in CHANGELOG.md.
 
 Template env files (`.env.example`, `.env.sample`) and public keys (`*.pub`)
 are not flagged. Paths inside the session's working directory are matched
@@ -97,10 +137,15 @@ a rule off.
 ## Where the verdict shows up
 
 - A coloured dot after each session in the list.
-- The details panel (`t` in the list): verdict, findings, a change summary and
-  recent activity.
+- The details panel (`t` in the list): verdict, findings grouped by the five
+  questions, a change summary and recent activity.
 - A desktop notification when a session you are not looking at turns red.
-- The activity log, which records every change of verdict.
+- The last thing Sakshi prints when you quit: one line per agent session with
+  its badge and the finding that decided it (the most severe one; between
+  equals, faked success is named first). A plain shell is listed only when
+  something in it looked off, and notes (`info`) never are.
+- `sakshi report` and `sakshi sessions`, from the activity log, which records
+  every change of verdict.
 
 ## How commands are read
 

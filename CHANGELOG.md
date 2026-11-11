@@ -3,6 +3,28 @@
 All notable changes to Sakshi. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- The verdict is printed when you quit: one line per agent session with its badge and
+  the finding that decided it, and the command for the full report. A plain shell is
+  listed only when something in it looked off.
+- Findings are grouped under the question they answer: faked success, risky actions,
+  not verified, worth reviewing, blind spots. The details panel and `sakshi report`
+  (Markdown and `--format pr`) show the groups, and `--format json` gives each finding
+  a `concern` field. Rule names and severities are unchanged.
+- A stability promise for 1.x: protocol v1, activity logs, rule and concern names,
+  report JSON fields, config keys and the command line. See "What 1.0 keeps stable" in
+  SPEC.md.
+
+### Changed
+- SPEC.md now states what Sakshi is (a witness that answers "can I trust what the agent
+  just did?"), what it deliberately is not, and how new ideas are judged, in place of
+  the finished build roadmap. README, TRUST.md and CONTRIBUTING.md follow it.
+- The Markdown layout of `sakshi report` gained a sub-heading per group of findings.
+- A verdict that changes in the moment before Sakshi quits is now written to the
+  activity log too.
+
 ## [0.4.0] - 2026-11-07
 
 ### Added
