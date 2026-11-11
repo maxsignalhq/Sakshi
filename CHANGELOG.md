@@ -5,6 +5,12 @@ All notable changes to Sakshi. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-11
+
+Sakshi 1.0 has one job: answering "can I trust what my agent just did?". Nothing was
+removed. From this release the protocol, activity logs, rule and concern names, report
+JSON, config keys and command line are stable for the 1.x series.
+
 ### Added
 - The verdict is printed when you quit: one line per agent session with its badge and
   the finding that decided it, and the command for the full report. A plain shell is
