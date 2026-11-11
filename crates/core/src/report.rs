@@ -3,9 +3,9 @@
 use time::OffsetDateTime;
 
 use crate::event::{format_age, Event, EventKind};
-use crate::session::{SessionId, SessionState};
+use crate::session::{AgentKind, SessionId, SessionState};
 use crate::summary::{summarize, Summary};
-use crate::trust::{evaluate, TrustReport};
+use crate::trust::{evaluate, Badge, TrustReport};
 
 /// Commands listed in a report before "and N more".
 const MAX_COMMANDS_LISTED: usize = 15;
@@ -112,20 +112,9 @@ impl Report {
             "## Trust: {}\n\n",
             self.trust.badge.as_str().to_uppercase()
         ));
-        if self.trust.findings.is_empty() {
-            out.push_str("Nothing looked off.\n\n");
-        }
-        for finding in &self.trust.findings {
-            out.push_str(&format!(
-                "- **{}** `{}`: {}\n",
-                finding.severity.as_str(),
-                finding.rule,
-                finding.reason
-            ));
-        }
-        if !self.trust.findings.is_empty() {
-            out.push('\n');
-        }
+        out.push_str(&findings_markdown(&self.trust, |title| {
+            format!("### {title}")
+        }));
 
         out.push_str("## What happened\n\n");
         let lines = self.summary.lines();
@@ -175,20 +164,9 @@ impl Report {
             self.agent,
             self.trust.badge.as_str().to_uppercase()
         ));
-        if self.trust.findings.is_empty() {
-            out.push_str("Nothing looked off.\n\n");
-        }
-        for finding in &self.trust.findings {
-            out.push_str(&format!(
-                "- **{}** `{}`: {}\n",
-                finding.severity.as_str(),
-                finding.rule,
-                finding.reason
-            ));
-        }
-        if !self.trust.findings.is_empty() {
-            out.push('\n');
-        }
+        out.push_str(&findings_markdown(&self.trust, |title| {
+            format!("**{title}**")
+        }));
         let s = &self.summary;
         if s.tests_passed + s.tests_failed + s.tests_unknown == 0 {
             out.push_str("**Tests:** the agent ran none.\n");
@@ -210,6 +188,119 @@ impl Report {
         }
         out
     }
+}
+
+/// The findings as Markdown lists, one per concern, each under `heading`.
+fn findings_markdown(trust: &TrustReport, heading: impl Fn(&str) -> String) -> String {
+    if trust.findings.is_empty() {
+        return "Nothing looked off.\n\n".to_string();
+    }
+    let mut out = String::new();
+    for (concern, findings) in trust.by_concern() {
+        out.push_str(&heading(concern.title()));
+        out.push_str("\n\n");
+        for finding in findings {
+            out.push_str(&format!(
+                "- **{}** `{}`: {}\n",
+                finding.severity.as_str(),
+                finding.rule,
+                finding.reason
+            ));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// What Sakshi concluded about one session, for the summary printed on exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionVerdict {
+    /// The session.
+    pub id: SessionId,
+    /// Its display name.
+    pub name: String,
+    /// What ran in it.
+    pub agent: AgentKind,
+    /// The verdict when the session was closed or Sakshi quit.
+    pub trust: TrustReport,
+}
+
+impl SessionVerdict {
+    /// Whether the session belongs in the exit summary: every agent does, a
+    /// plain shell only when something in it looked off.
+    fn is_worth_saying(&self) -> bool {
+        self.agent != AgentKind::Generic || self.trust.badge != Badge::Green
+    }
+
+    /// One line: the badge, the session, and the finding that decided it.
+    fn line(&self, name_width: usize) -> String {
+        let badge = self.trust.badge.as_str().to_uppercase();
+        let why = match self.trust.worst() {
+            None => "nothing looked off".to_string(),
+            Some(worst) => {
+                let others = self
+                    .trust
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity > crate::trust::Severity::Info)
+                    .count()
+                    - 1;
+                let more = if others == 0 {
+                    String::new()
+                } else {
+                    format!(" (+{others} more)")
+                };
+                format!(
+                    "{}: {}{more}",
+                    worst.concern().title(),
+                    one_line(&worst.reason)
+                )
+            }
+        };
+        format!("  {badge:<6}  {:<name_width$}  {why}", self.name)
+    }
+}
+
+/// Longest reason shown in the exit summary before it is cut.
+const MAX_EXIT_REASON: usize = 100;
+
+fn one_line(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX_EXIT_REASON {
+        return flat;
+    }
+    let cut: String = flat.chars().take(MAX_EXIT_REASON - 3).collect();
+    format!("{cut}...")
+}
+
+/// What to print when Sakshi exits: one line per session worth mentioning, so
+/// the verdict is the last thing on screen. `None` when there is nothing to
+/// say. `logged` is whether activity logs were written, and so whether
+/// `sakshi report` can show more.
+pub fn exit_summary(verdicts: &[SessionVerdict], logged: bool) -> Option<String> {
+    let shown: Vec<&SessionVerdict> = verdicts.iter().filter(|v| v.is_worth_saying()).collect();
+    if shown.is_empty() {
+        return None;
+    }
+    let width = shown
+        .iter()
+        .map(|v| v.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::from("Sakshi's verdict:\n");
+    for verdict in &shown {
+        out.push_str(&verdict.line(width));
+        out.push('\n');
+    }
+    if logged {
+        match shown.as_slice() {
+            [one] => out.push_str(&format!("Details: sakshi report {}", one.id)),
+            _ => out.push_str("Details: sakshi sessions, then sakshi report <session>"),
+        }
+    } else {
+        out = out.trim_end().to_string();
+    }
+    Some(out)
 }
 
 /// `path` without the leading `cwd`, when it is under it.
@@ -272,7 +363,7 @@ pub fn timeline_line(event: &Event, start: OffsetDateTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trust::{Badge, Finding, Severity};
+    use crate::trust::{Badge, Finding, Severity, TrustReport};
 
     fn at(secs: i64, kind: EventKind) -> Event {
         Event {
@@ -488,5 +579,140 @@ mod tests {
             line(&trust),
             "+01:01:40  trust: RED (1 finding(s)) - bad thing"
         );
+    }
+
+    #[test]
+    fn findings_are_grouped_under_the_question_they_answer() {
+        let mut events = sample();
+        events.push(at(
+            126,
+            EventKind::Trust {
+                badge: Badge::Red,
+                findings: vec![
+                    Finding {
+                        rule: "destructive-command".into(),
+                        severity: Severity::Alert,
+                        reason: "ran `git push --force`".into(),
+                    },
+                    Finding {
+                        rule: "tests-skipped".into(),
+                        severity: Severity::Warn,
+                        reason: "added a skip".into(),
+                    },
+                ],
+            },
+        ));
+        let report = Report::from_events(&events).unwrap();
+        let md = report.to_markdown();
+        let faked = md.find("### Faked success").unwrap();
+        let risky = md.find("### Risky actions").unwrap();
+        // Concern order, not severity order, decides which group comes first.
+        assert!(faked < risky, "{md}");
+        assert!(md[faked..risky].contains("`tests-skipped`"), "{md}");
+        assert!(md[risky..].contains("`destructive-command`"), "{md}");
+        let pr = report.to_pr_markdown();
+        assert!(pr.contains("**Faked success**\n\n- **warn**"), "{pr}");
+        assert!(!pr.contains("### Faked"), "{pr}");
+    }
+
+    fn verdict(name: &str, agent: AgentKind, findings: Vec<Finding>) -> SessionVerdict {
+        SessionVerdict {
+            id: SessionId(0xab),
+            name: name.into(),
+            agent,
+            trust: TrustReport {
+                badge: Badge::from_findings(&findings),
+                findings,
+            },
+        }
+    }
+
+    fn finding(rule: &str, severity: Severity, reason: &str) -> Finding {
+        Finding {
+            rule: rule.into(),
+            severity,
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn the_exit_summary_names_each_agent_and_why() {
+        let verdicts = [
+            verdict(
+                "claude",
+                AgentKind::Claude,
+                vec![
+                    finding("tests-deleted", Severity::Alert, "deleted tests/a.py"),
+                    finding("tests-skipped", Severity::Warn, "added\n a skip"),
+                    finding("lockfile-changed", Severity::Info, "Cargo.lock changed"),
+                ],
+            ),
+            verdict("codex-2", AgentKind::Codex, Vec::new()),
+        ];
+        let text = exit_summary(&verdicts, true).unwrap();
+        assert_eq!(
+            text,
+            "Sakshi's verdict:\n\
+             \x20 RED     claude   Faked success: deleted tests/a.py (+1 more)\n\
+             \x20 GREEN   codex-2  nothing looked off\n\
+             Details: sakshi sessions, then sakshi report <session>"
+        );
+    }
+
+    #[test]
+    fn the_exit_summary_stays_quiet_about_clean_shells() {
+        let shell = verdict("zsh", AgentKind::Generic, Vec::new());
+        assert_eq!(exit_summary(std::slice::from_ref(&shell), true), None);
+        assert_eq!(exit_summary(&[], true), None);
+        // A note alone does not make a shell worth mentioning.
+        let noted = verdict(
+            "zsh",
+            AgentKind::Generic,
+            vec![finding("lockfile-changed", Severity::Info, "x")],
+        );
+        assert_eq!(exit_summary(&[noted], true), None);
+        // A shell where something looked off is, and one session gets its id.
+        let risky = verdict(
+            "zsh",
+            AgentKind::Generic,
+            vec![finding(
+                "destructive-command",
+                Severity::Alert,
+                "ran `rm -rf /`",
+            )],
+        );
+        let text = exit_summary(&[shell, risky], true).unwrap();
+        assert!(
+            text.contains("RED     zsh  Risky actions: ran `rm -rf /`"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("Details: sakshi report 00000000000000ab"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_exit_summary_does_not_point_at_logs_that_were_not_written() {
+        let v = verdict("claude", AgentKind::Claude, Vec::new());
+        let text = exit_summary(&[v], false).unwrap();
+        assert_eq!(
+            text,
+            "Sakshi's verdict:\n  GREEN   claude  nothing looked off"
+        );
+    }
+
+    #[test]
+    fn long_reasons_are_cut_in_the_exit_summary() {
+        let long = "x".repeat(300);
+        let v = verdict(
+            "claude",
+            AgentKind::Claude,
+            vec![finding("sensitive-file", Severity::Warn, &long)],
+        );
+        let text = exit_summary(&[v], false).unwrap();
+        let line = text.lines().nth(1).unwrap();
+        assert!(line.ends_with("..."), "{line}");
+        assert!(line.chars().count() < 140, "{line}");
     }
 }

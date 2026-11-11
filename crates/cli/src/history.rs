@@ -141,6 +141,7 @@ fn report_json(r: &Report) -> Value {
             "badge": r.trust.badge.as_str(),
             "findings": r.trust.findings.iter().map(|f| json!({
                 "rule": f.rule,
+                "concern": f.concern().as_str(),
                 "severity": f.severity.as_str(),
                 "reason": f.reason,
             })).collect::<Vec<_>>(),

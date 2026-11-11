@@ -179,6 +179,7 @@ fn report_json_is_valid_and_complete() {
     assert_eq!(v["final_state"], "done");
     assert_eq!(v["trust"]["badge"], "red");
     assert_eq!(v["trust"]["findings"][0]["rule"], "destructive-command");
+    assert_eq!(v["trust"]["findings"][0]["concern"], "risky-action");
     assert_eq!(v["summary"]["files_edited"][0], "src/main.rs");
     assert_eq!(v["duration_seconds"], 4);
 }
