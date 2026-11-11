@@ -1748,7 +1748,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sakshi"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "sakshi-adapters"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "sakshi-core",
  "serde_json",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "sakshi-core"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "thiserror 2.0.21",
  "time",
@@ -1789,14 +1789,14 @@ dependencies = [
 
 [[package]]
 name = "sakshi-git"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "sakshi-core",
 ]
 
 [[package]]
 name = "sakshi-ipc"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "sakshi-core",
  "serde_json",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "sakshi-pty"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "portable-pty",
  "thiserror 2.0.21",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "sakshi-store"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "sakshi-core",
@@ -1828,7 +1828,7 @@ dependencies = [
 
 [[package]]
 name = "sakshi-tui"
-version = "0.4.0"
+version = "1.0.0"
 dependencies = [
  "notify-rust",
  "ratatui",
