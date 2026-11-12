@@ -6,7 +6,7 @@ Sakshi (साक्षी, Sanskrit for "the witness") is the terminal you run 
 
 ![Sakshi watching an agent fake a green build: the agent reports success, Sakshi turns red and lists why](docs/media/demo.gif)
 
-<sub>An agent is asked to fix failing tests. It skips the test, deletes the assertions and lowers the coverage gate, then reports "All tests pass". Sakshi turns the session red and says exactly why. (Recorded with a scripted stand-in agent so it is reproducible; see <a href="scripts/demo">scripts/demo</a>.)</sub>
+<sub>An agent is asked to fix failing tests. It skips the test, deletes the assertions and lowers the coverage gate, then reports "All tests pass". Sakshi turns the session red, says exactly why, and repeats the verdict when you quit. (Recorded with a scripted stand-in agent so it is reproducible; see <a href="scripts/demo">scripts/demo</a>.)</sub>
 
 ## Why
 Running agents is easy. Knowing whether to accept what they did is not. "All tests pass" is true when the agent fixed the bug, and also true when it deleted the test. Sakshi tells the two apart by answering five questions about every session:
